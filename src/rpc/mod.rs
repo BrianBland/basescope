@@ -14,8 +14,12 @@ use crate::error::SpamscanError;
 
 const AI_INCREMENT: f64 = 0.05;
 const MD_FACTOR: f64 = 0.5;
-const HEAL_RATE: f64 = 0.01;
+const HEAL_RATE: f64 = 0.002;
 const HEAL_INTERVAL_SECS: f64 = 1.0;
+/// Softmax temperature: lower → more aggressive (best endpoint dominates),
+/// higher → more uniform. At 0.25 a single failure (~0.5 score) drops traffic
+/// to ~12%, leaving enough for recovery without wasting requests.
+const SOFTMAX_TEMP: f64 = 0.25;
 
 struct EndpointState {
     score: f64,
@@ -70,15 +74,28 @@ impl Scorer {
     fn pick_weighted(&mut self) -> usize {
         self.heal_scores();
 
-        let total: f64 = self.endpoints.iter().map(|ep| ep.score).sum();
+        let max_score = self
+            .endpoints
+            .iter()
+            .map(|ep| ep.score)
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        // exp((score - max) / T) for numerical stability.
+        let weights: Vec<f64> = self
+            .endpoints
+            .iter()
+            .map(|ep| ((ep.score - max_score) / SOFTMAX_TEMP).exp())
+            .collect();
+
+        let total: f64 = weights.iter().sum();
         if total <= 0.0 {
             return 0;
         }
 
         let r = self.next_f64() * total;
         let mut cumulative = 0.0;
-        for (i, ep) in self.endpoints.iter().enumerate() {
-            cumulative += ep.score;
+        for (i, w) in weights.iter().enumerate() {
+            cumulative += w;
             if r < cumulative {
                 return i;
             }
