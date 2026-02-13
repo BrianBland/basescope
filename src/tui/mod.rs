@@ -54,7 +54,7 @@ pub enum ScaleMode {
 }
 
 impl ScaleMode {
-    pub fn apply(self, v: f64) -> f64 {
+    fn raw_apply(self, v: f64) -> f64 {
         match self {
             ScaleMode::Linear => v,
             ScaleMode::Log10 => {
@@ -65,11 +65,10 @@ impl ScaleMode {
                 }
             }
             ScaleMode::Symlog => {
-                let threshold = 1.0;
-                if v.abs() < threshold {
-                    v
+                if v <= 0.0 {
+                    0.0
                 } else {
-                    v.signum() * (v.abs().log10() + threshold)
+                    (1.0 + v).ln()
                 }
             }
             ScaleMode::Sqrt => {
@@ -82,19 +81,34 @@ impl ScaleMode {
         }
     }
 
-    pub fn invert(self, v: f64) -> f64 {
+    fn raw_invert(self, v: f64) -> f64 {
         match self {
             ScaleMode::Linear => v,
             ScaleMode::Log10 => 10.0_f64.powf(v),
-            ScaleMode::Symlog => {
-                let threshold = 1.0;
-                if v.abs() < threshold {
-                    v
+            ScaleMode::Symlog => v.exp() - 1.0,
+            ScaleMode::Sqrt => v * v,
+        }
+    }
+
+    pub fn build_transform(self, data: &[(f64, f64)]) -> ScaleTransform {
+        let offset = match self {
+            ScaleMode::Linear | ScaleMode::Sqrt => 0.0,
+            ScaleMode::Log10 | ScaleMode::Symlog => {
+                let min_y = data
+                    .iter()
+                    .map(|(_, y)| *y)
+                    .filter(|y| *y > 0.0)
+                    .fold(f64::INFINITY, f64::min);
+                if min_y.is_finite() {
+                    self.raw_apply(min_y)
                 } else {
-                    v.signum() * 10.0_f64.powf(v.abs() - threshold)
+                    0.0
                 }
             }
-            ScaleMode::Sqrt => v * v,
+        };
+        ScaleTransform {
+            mode: self,
+            offset,
         }
     }
 
@@ -114,6 +128,22 @@ impl ScaleMode {
             ScaleMode::Symlog => ScaleMode::Sqrt,
             ScaleMode::Sqrt => ScaleMode::Linear,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ScaleTransform {
+    pub mode: ScaleMode,
+    offset: f64,
+}
+
+impl ScaleTransform {
+    pub fn apply(&self, v: f64) -> f64 {
+        self.mode.raw_apply(v) - self.offset
+    }
+
+    pub fn invert(&self, v: f64) -> f64 {
+        self.mode.raw_invert(v + self.offset)
     }
 }
 

@@ -12,7 +12,7 @@ use tracing::Level;
 
 use crate::domain::{approx_head_block, BASE_BLOCK_TIME_SECS, BASE_GENESIS_TIMESTAMP};
 use crate::tui::{
-    App, AppMode, BottomPanel, ChunkState, Granularity, HistogramMode, RangeField, ScaleMode,
+    App, AppMode, BottomPanel, ChunkState, Granularity, HistogramMode, RangeField, ScaleTransform,
 };
 
 type FilterEntry = (String, usize, Vec<(f64, f64)>);
@@ -230,7 +230,7 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         .collect();
 
     let grouped_base_fee = group_series_avg(&snapshot.base_fee_series, g);
-    let scale = app.scale_mode;
+    let scale = app.scale_mode.build_transform(&grouped_base_fee);
     let scaled_base_fee: Vec<(f64, f64)> = grouped_base_fee
         .iter()
         .map(|(x, y)| (*x, scale.apply(*y)))
@@ -318,7 +318,7 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         );
     frame.render_widget(tx_chart, layout[0]);
 
-    let by_labels = scaled_y_labels_gwei(by_min, by_max, scale);
+    let by_labels = scaled_y_labels_gwei(by_min, by_max, &scale);
 
     let scaled_base_fee_by_x: HashMap<u64, f64> = scaled_base_fee
         .iter()
@@ -346,7 +346,7 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         );
     }
 
-    let scale_suffix = scale.label();
+    let scale_suffix = app.scale_mode.label();
     let base_fee_chart = Chart::new(bf_datasets)
         .block(
             Block::default()
@@ -1580,7 +1580,7 @@ fn y_labels_int(y_min: f64, y_max: f64) -> Vec<String> {
     ]
 }
 
-fn scaled_y_labels_gwei(scaled_min: f64, scaled_max: f64, scale: ScaleMode) -> Vec<String> {
+fn scaled_y_labels_gwei(scaled_min: f64, scaled_max: f64, scale: &ScaleTransform) -> Vec<String> {
     let mid = (scaled_min + scaled_max) / 2.0;
     let q1 = (scaled_min + mid) / 2.0;
     let q3 = (mid + scaled_max) / 2.0;
