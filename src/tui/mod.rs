@@ -40,6 +40,12 @@ pub enum RangeField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Granularity {
+    Auto,
+    Fixed(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistogramMode {
     FilterMatches,
     AllBlocks,
@@ -75,7 +81,9 @@ pub struct App {
     pub chunk_progress: Vec<f32>,
     pub chunk_ranges: Vec<(u64, u64)>,
     pub bottom_panel: BottomPanel,
-    pub granularity: usize,
+    pub granularity: Granularity,
+    pub auto_granularity: usize,
+    pub granularity_input: Option<String>,
     pub mouse_col: u16,
     pub mouse_row: u16,
     pub hist_mode: HistogramMode,
@@ -113,7 +121,9 @@ impl App {
             chunk_progress: Vec::new(),
             chunk_ranges: Vec::new(),
             bottom_panel: BottomPanel::Logs,
-            granularity: 1,
+            granularity: Granularity::Auto,
+            auto_granularity: 1,
+            granularity_input: None,
             mouse_col: 0,
             mouse_row: 0,
             hist_mode: HistogramMode::FilterMatches,
@@ -203,6 +213,10 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.granularity_input.is_some() {
+            return self.handle_granularity_input(key);
+        }
+
         if key.code == KeyCode::Char('q') {
             self.should_quit = true;
             return Ok(());
@@ -231,10 +245,17 @@ impl App {
                 }
                 KeyCode::Char('g') => {
                     self.granularity = match self.granularity {
-                        1 => 10,
-                        10 => 100,
-                        _ => 1,
+                        Granularity::Fixed(1) => Granularity::Fixed(10),
+                        Granularity::Fixed(10) => Granularity::Fixed(100),
+                        Granularity::Fixed(100) => Granularity::Fixed(1000),
+                        Granularity::Fixed(1000) => Granularity::Auto,
+                        Granularity::Auto => Granularity::Fixed(1),
+                        Granularity::Fixed(_) => Granularity::Fixed(1),
                     };
+                    return Ok(());
+                }
+                KeyCode::Char('G') => {
+                    self.granularity_input = Some(String::new());
                     return Ok(());
                 }
                 KeyCode::Char('h') => {
@@ -397,6 +418,9 @@ impl App {
     }
 
     fn start_pipeline(&mut self, spec: ScanSpec) {
+        let range = spec.end_block.saturating_sub(spec.start_block).max(1) as usize;
+        self.auto_granularity = auto_granularity(range);
+
         self.analysis = Some(Analyzer::new(&spec.filters));
         self.snapshot = self.analysis.as_ref().map(|a| a.snapshot());
 
@@ -426,10 +450,70 @@ impl App {
         }
     }
 
+    fn handle_granularity_input(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Enter => {
+                if let Some(ref input) = self.granularity_input {
+                    let trimmed = input.trim();
+                    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+                        self.granularity = Granularity::Auto;
+                    } else if let Ok(v) = trimmed.parse::<usize>() {
+                        self.granularity = Granularity::Fixed(v.max(1));
+                    }
+                }
+                self.granularity_input = None;
+            }
+            KeyCode::Esc => {
+                self.granularity_input = None;
+            }
+            KeyCode::Backspace => {
+                if let Some(ref mut input) = self.granularity_input {
+                    input.pop();
+                }
+            }
+            KeyCode::Char(c) if c.is_ascii_alphanumeric() => {
+                if let Some(ref mut input) = self.granularity_input {
+                    input.push(c);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn effective_granularity(&self) -> usize {
+        match self.granularity {
+            Granularity::Auto => self.auto_granularity,
+            Granularity::Fixed(v) => v,
+        }
+    }
+
+    pub fn granularity_label(&self) -> String {
+        let g = self.effective_granularity();
+        match self.granularity {
+            Granularity::Auto if g > 1 => format!(" (auto {}blk)", g),
+            Granularity::Auto => String::new(),
+            Granularity::Fixed(v) => format!(" ({}blk)", v),
+        }
+    }
+
     fn reindex_filters(&mut self) {
         for (idx, filter) in self.filters.iter_mut().enumerate() {
             filter.id = crate::domain::FilterId(idx);
             filter.color_index = idx;
         }
+    }
+}
+
+fn auto_granularity(block_range: usize) -> usize {
+    const TARGET_POINTS: usize = 2500;
+    let raw = block_range / TARGET_POINTS;
+    match raw {
+        0 => 1,
+        1..=7 => 1,
+        8..=30 => 10,
+        31..=300 => 100,
+        301..=3000 => 1000,
+        _ => 10000,
     }
 }

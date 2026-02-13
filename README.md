@@ -13,7 +13,7 @@ A terminal UI for analyzing transaction activity on Base. Fetches blocks over JS
 - **Mouse crosshair** — hover over charts to inspect individual block values
 - **Chunk-level caching** — fetched block data is cached to disk as bincode, so re-scanning the same range is instant
 - **Multi-RPC support** — round-robin across multiple endpoints with automatic scoring/failover
-- **Adjustable granularity** — group blocks in buckets of 1, 10, or 100 for zoomed-out views
+- **Adjustable granularity** — group blocks in buckets of 1 to 10000+, with auto-scaling based on block range; affects both line charts and histograms
 
 ## Install
 
@@ -75,7 +75,8 @@ All CLI flags can be set via environment variables or a `.env` file:
 |---|---|
 | `1`–`9` | Toggle individual filters on/off |
 | `a` | Toggle aggregate mode |
-| `g` | Cycle granularity (1 → 10 → 100 → 1) |
+| `g` | Cycle granularity (1 → 10 → 100 → 1000 → auto → 1) |
+| `G` | Set custom granularity (number or "auto") |
 | `h` | Switch histogram between filter matches and all blocks |
 | `l` | Toggle log panel |
 | `r` | Toggle RPC info panel |

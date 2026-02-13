@@ -11,7 +11,7 @@ use ratatui::widgets::{
 use tracing::Level;
 
 use crate::domain::{approx_head_block, BASE_BLOCK_TIME_SECS, BASE_GENESIS_TIMESTAMP};
-use crate::tui::{App, AppMode, BottomPanel, ChunkState, HistogramMode, RangeField};
+use crate::tui::{App, AppMode, BottomPanel, ChunkState, Granularity, HistogramMode, RangeField};
 
 type FilterEntry = (String, usize, Vec<(f64, f64)>);
 type FilterSeries = Vec<FilterEntry>;
@@ -53,6 +53,10 @@ pub fn render(app: &App, frame: &mut Frame) {
 
     if app.show_help {
         render_help_panel(app, frame, outer);
+    }
+
+    if app.granularity_input.is_some() {
+        render_granularity_input(app, frame, outer);
     }
 }
 
@@ -207,7 +211,7 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     app.tx_chart_rect.set(layout[0]);
     app.bf_chart_rect.set(layout[1]);
 
-    let g = app.granularity;
+    let g = app.effective_granularity();
     let (x_min, x_max) = series_x_bounds(&snapshot.base_fee_series);
     let x_labels = x_axis_labels(x_min, x_max, layout[0].width.saturating_sub(8) as usize);
 
@@ -255,11 +259,7 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         &grouped_base_fee,
     );
 
-    let gran_suffix = if g > 1 {
-        format!(" ({}blk)", g)
-    } else {
-        String::new()
-    };
+    let gran_suffix = app.granularity_label();
 
     let tx_title = match &crosshair {
         Some(ch) => {
@@ -383,35 +383,30 @@ fn rebucket(raw: &[(f64, f64)], max_buckets: usize) -> Vec<(f64, f64, f64)> {
     sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let target = max_buckets.max(1).min(sorted.len());
-    let fee_min = sorted.first().unwrap().0;
-    let fee_max = sorted.last().unwrap().0;
 
-    if target >= sorted.len() || (fee_max - fee_min).abs() < 1e-9 {
+    if target >= sorted.len() {
         return sorted.iter().map(|(b, c)| (*b, *b, *c)).collect();
     }
 
-    let step = (fee_max - fee_min) / target as f64;
+    let total_count: f64 = sorted.iter().map(|(_, c)| *c).sum();
+    let count_per_bucket = total_count / target as f64;
+
     let mut merged: Vec<(f64, f64, f64)> = Vec::with_capacity(target);
-    let mut lo = fee_min;
-    let mut idx = 0;
-    for _ in 0..target {
-        let hi = lo + step;
-        let mut count = 0.0;
-        while idx < sorted.len() && sorted[idx].0 < hi + 1e-12 {
-            count += sorted[idx].1;
-            idx += 1;
+    let mut lo = sorted[0].0;
+    let mut hi = lo;
+    let mut accum = 0.0;
+
+    for &(fee, count) in &sorted {
+        if accum >= count_per_bucket && merged.len() < target - 1 {
+            merged.push((lo, hi, accum));
+            lo = fee;
+            accum = 0.0;
         }
-        if count > 0.0 {
-            merged.push((lo, hi, count));
-        }
-        lo = hi;
+        hi = fee;
+        accum += count;
     }
-    while idx < sorted.len() {
-        if let Some(last) = merged.last_mut() {
-            last.2 += sorted[idx].1;
-            last.1 = sorted[idx].0;
-        }
-        idx += 1;
+    if accum > 0.0 {
+        merged.push((lo, hi, accum));
     }
     merged
 }
@@ -629,13 +624,14 @@ fn bucket_overlaps(bucket_lo: f64, bucket_hi: f64, raw: &[(f64, f64)]) -> bool {
 }
 
 fn render_histogram_all_blocks(
-    _app: &App,
+    app: &App,
     snapshot: &crate::domain::AnalysisSnapshot,
     frame: &mut Frame,
     area: Rect,
     inner_width: usize,
     gap: usize,
 ) {
+    let g = app.effective_granularity();
     let sample_label_len = 6;
     let bar_w = sample_label_len.max(3) as u16;
     let max_buckets = if (bar_w as usize + gap) > 0 {
@@ -645,7 +641,24 @@ fn render_histogram_all_blocks(
     }
     .max(2);
 
-    let merged = rebucket(&snapshot.all_blocks_histogram, max_buckets);
+    let hist_data: Vec<(f64, f64)> = if g > 1 {
+        let grouped = group_series_avg(&snapshot.base_fee_series, g);
+        let mut hist: Vec<(f64, f64)> = Vec::new();
+        for &(_block, avg_fee) in &grouped {
+            let bucket = (avg_fee * 1000.0).floor() / 1000.0;
+            if let Some((_, count)) = hist.iter_mut().find(|(b, _)| (*b - bucket).abs() < 1e-9) {
+                *count += 1.0;
+            } else {
+                hist.push((bucket, 1.0));
+            }
+        }
+        hist.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        hist
+    } else {
+        snapshot.all_blocks_histogram.clone()
+    };
+
+    let merged = rebucket(&hist_data, max_buckets);
     let hist_max = merged.iter().map(|(_, hi, _)| *hi).fold(0.0_f64, f64::max);
     let unit = pick_fee_unit(hist_max);
 
@@ -695,12 +708,11 @@ fn render_histogram_all_blocks(
         })
         .collect();
 
+    let gran_suffix = app.granularity_label();
+    let title = format!("base fee histogram — all blocks{gran_suffix} [h: switch]");
+
     let chart = BarChart::default()
-        .block(
-            Block::default()
-                .title("base fee histogram — all blocks [h: switch]")
-                .borders(Borders::ALL),
-        )
+        .block(Block::default().title(title).borders(Borders::ALL))
         .bar_width(dynamic_bar_w)
         .bar_gap(gap as u16)
         .data(BarGroup::default().bars(&bar_group));
@@ -1074,6 +1086,7 @@ fn help_lines(mode: AppMode) -> Vec<Line<'static>> {
             entries.push(("1-9", "toggle filter"));
             entries.push(("a", "aggregate mode"));
             entries.push(("g", "cycle granularity"));
+            entries.push(("G", "set granularity"));
             entries.push(("h", "switch histogram"));
             entries.push(("l", "toggle logs"));
             entries.push(("r", "toggle rpc info"));
@@ -1110,6 +1123,46 @@ fn render_help_panel(app: &App, frame: &mut Frame, outer: Rect) {
         .style(Style::default().bg(Color::Black));
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
+}
+
+fn render_granularity_input(app: &App, frame: &mut Frame, outer: Rect) {
+    let panel_w = 32u16.min(outer.width);
+    let panel_h = 3u16;
+    let area = Rect {
+        x: outer.x + (outer.width.saturating_sub(panel_w)) / 2,
+        y: outer.y + (outer.height.saturating_sub(panel_h)) / 2,
+        width: panel_w,
+        height: panel_h,
+    };
+
+    frame.render_widget(ratatui::widgets::Clear, area);
+
+    let input_text = app.granularity_input.as_deref().unwrap_or("");
+    let hint = if input_text.is_empty() {
+        match app.granularity {
+            Granularity::Auto => "auto".to_string(),
+            Granularity::Fixed(v) => v.to_string(),
+        }
+    } else {
+        input_text.to_string()
+    };
+
+    let style = if input_text.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default()
+    };
+    let paragraph = Paragraph::new(hint).style(style).block(
+        Block::default()
+            .title("granularity (number or 'auto')")
+            .borders(Borders::ALL)
+            .style(Style::default().bg(Color::Black)),
+    );
+    frame.render_widget(paragraph, area);
+
+    let cursor_x = area.x + 1 + input_text.len() as u16;
+    let cursor_y = area.y + 1;
+    frame.set_cursor_position((cursor_x, cursor_y));
 }
 
 fn group_series_sum(series: &[(f64, f64)], granularity: usize) -> Vec<(f64, f64)> {
