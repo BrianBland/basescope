@@ -49,7 +49,6 @@ pub enum Granularity {
 pub enum ScaleMode {
     Linear,
     Log10,
-    Symlog,
     Sqrt,
 }
 
@@ -62,13 +61,6 @@ impl ScaleMode {
                     0.0
                 } else {
                     v.log10()
-                }
-            }
-            ScaleMode::Symlog => {
-                if v <= 0.0 {
-                    0.0
-                } else {
-                    (1.0 + v).ln()
                 }
             }
             ScaleMode::Sqrt => {
@@ -85,7 +77,6 @@ impl ScaleMode {
         match self {
             ScaleMode::Linear => v,
             ScaleMode::Log10 => 10.0_f64.powf(v),
-            ScaleMode::Symlog => v.exp() - 1.0,
             ScaleMode::Sqrt => v * v,
         }
     }
@@ -93,7 +84,7 @@ impl ScaleMode {
     pub fn build_transform(self, data: &[(f64, f64)]) -> ScaleTransform {
         let offset = match self {
             ScaleMode::Linear | ScaleMode::Sqrt => 0.0,
-            ScaleMode::Log10 | ScaleMode::Symlog => {
+            ScaleMode::Log10 => {
                 let min_y = data
                     .iter()
                     .map(|(_, y)| *y)
@@ -116,7 +107,6 @@ impl ScaleMode {
         match self {
             ScaleMode::Linear => "",
             ScaleMode::Log10 => " [log]",
-            ScaleMode::Symlog => " [symlog]",
             ScaleMode::Sqrt => " [sqrt]",
         }
     }
@@ -124,8 +114,7 @@ impl ScaleMode {
     pub fn next(self) -> Self {
         match self {
             ScaleMode::Linear => ScaleMode::Log10,
-            ScaleMode::Log10 => ScaleMode::Symlog,
-            ScaleMode::Symlog => ScaleMode::Sqrt,
+            ScaleMode::Log10 => ScaleMode::Sqrt,
             ScaleMode::Sqrt => ScaleMode::Linear,
         }
     }
