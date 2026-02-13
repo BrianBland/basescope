@@ -151,7 +151,7 @@ pub struct TxRecord {
 }
 
 impl TxRecord {
-    pub fn from_addr(&self) -> Address {
+    pub fn sender(&self) -> Address {
         Address::from(self.from)
     }
 

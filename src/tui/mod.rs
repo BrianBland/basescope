@@ -220,6 +220,26 @@ impl App {
                     };
                     return Ok(());
                 }
+                KeyCode::Char('a') => {
+                    if let Some(analyzer) = &mut self.analysis {
+                        analyzer.toggle_aggregate();
+                        self.snapshot = Some(analyzer.snapshot());
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() => {
+                    let index = c.to_digit(10).unwrap_or(0) as usize;
+                    if index > 0 {
+                        let filter_index = index - 1;
+                        if let Some(filter) = self.filters.get(filter_index)
+                            && let Some(analyzer) = &mut self.analysis
+                        {
+                            analyzer.toggle_filter(filter.id);
+                            self.snapshot = Some(analyzer.snapshot());
+                        }
+                    }
+                    return Ok(());
+                }
                 _ => {}
             }
         }
@@ -227,8 +247,7 @@ impl App {
         match self.mode {
             AppMode::RangeInput => self.handle_range_input(key),
             AppMode::FilterInput => self.handle_filter_input(key),
-            AppMode::Fetching => Ok(()),
-            AppMode::Results => self.handle_results_input(key),
+            AppMode::Fetching | AppMode::Results => Ok(()),
         }
     }
 
@@ -318,41 +337,6 @@ impl App {
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.current_filter_input.push(c);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn handle_results_input(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Char('a') => {
-                if let Some(analyzer) = &mut self.analysis {
-                    analyzer.toggle_aggregate();
-                    self.snapshot = Some(analyzer.snapshot());
-                }
-            }
-            KeyCode::Char(c) if c.is_ascii_digit() => {
-                let index = c.to_digit(10).unwrap_or(0) as usize;
-                if index > 0 {
-                    let filter_index = index - 1;
-                    if let Some(filter) = self.filters.get(filter_index) {
-                        if let Some(analyzer) = &mut self.analysis {
-                            analyzer.toggle_filter(filter.id);
-                            self.snapshot = Some(analyzer.snapshot());
-                        }
-                    }
-                }
-            }
-            KeyCode::Up => {
-                if self.selected_filter > 0 {
-                    self.selected_filter -= 1;
-                }
-            }
-            KeyCode::Down => {
-                if self.selected_filter + 1 < self.filters.len() {
-                    self.selected_filter += 1;
-                }
             }
             _ => {}
         }

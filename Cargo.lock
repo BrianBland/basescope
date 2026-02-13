@@ -1156,6 +1156,7 @@ dependencies = [
  "crossterm",
  "dotenvy",
  "futures",
+ "libc",
  "parking_lot",
  "ratatui",
  "serde",

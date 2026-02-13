@@ -22,3 +22,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 parking_lot = "0.12"
 dotenvy = "0.15.7"
+libc = "0.2"

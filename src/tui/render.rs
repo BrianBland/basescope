@@ -10,15 +10,22 @@ use ratatui::widgets::{
 };
 use tracing::Level;
 
-use crate::domain::approx_head_block;
+use crate::domain::{approx_head_block, BASE_BLOCK_TIME_SECS, BASE_GENESIS_TIMESTAMP};
 use crate::tui::{App, AppMode, ChunkState, HistogramMode, RangeField};
+
+type FilterEntry = (String, usize, Vec<(f64, f64)>);
+type FilterSeries = Vec<FilterEntry>;
+type HistSlices<'a> = Vec<(&'a str, usize, &'a [(f64, f64)])>;
 
 const LOG_PANEL_HEIGHT: u16 = 8;
 
 pub fn render(app: &App, frame: &mut Frame) {
     let outer = frame.area();
 
-    if app.show_logs {
+    let all_done = !app.chunk_states.is_empty() && app.chunk_states.iter().all(is_complete);
+    let show_logs = app.show_logs && !(all_done && app.log_buffer.is_empty());
+
+    if show_logs {
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(LOG_PANEL_HEIGHT)])
@@ -191,7 +198,7 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let (x_min, x_max) = series_x_bounds(&snapshot.base_fee_series);
     let x_labels = x_axis_labels(x_min, x_max, layout[0].width.saturating_sub(8) as usize);
 
-    let grouped_filter_series: Vec<(String, usize, Vec<(f64, f64)>)> = snapshot
+    let grouped_filter_series: FilterSeries = snapshot
         .filters
         .iter()
         .filter(|f| f.enabled)
@@ -242,10 +249,13 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     };
 
     let tx_title = match &crosshair {
-        Some(ch) => format!(
-            "tx count per block{gran_suffix}  │  blk {:.0}  fee {:.3}",
-            ch.data_x, ch.base_fee_y
-        ),
+        Some(ch) => {
+            let fee_str = format_fee_value(ch.base_fee_y);
+            format!(
+                "tx count per block{gran_suffix}  │  blk {:.0}  fee {fee_str}",
+                ch.data_x
+            )
+        }
         None => format!("tx count per block{gran_suffix}"),
     };
 
@@ -316,7 +326,7 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let base_fee_chart = Chart::new(bf_datasets)
         .block(
             Block::default()
-                .title(format!("base fee (gwei){gran_suffix}"))
+                .title(format!("base fee{gran_suffix}"))
                 .borders(Borders::ALL),
         )
         .x_axis(
@@ -328,10 +338,15 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         .y_axis(
             Axis::default()
                 .bounds([by_min, by_max])
-                .title("gwei")
+                .title("fee")
                 .labels(by_labels),
         );
     frame.render_widget(base_fee_chart, layout[1]);
+
+    let tx_inner = chart_inner(layout[0], y_label_w);
+    let bf_inner = chart_inner(layout[1], y_label_w);
+    paint_time_of_day_bg(frame, tx_inner, x_min, x_max);
+    paint_time_of_day_bg(frame, bf_inner, x_min, x_max);
 
     if let Some(ch) = &crosshair {
         draw_crosshair_highlight(
@@ -388,11 +403,73 @@ fn rebucket(raw: &[(f64, f64)], max_buckets: usize) -> Vec<(f64, f64, f64)> {
     merged
 }
 
-fn format_fee_label(lo: f64, hi: f64) -> String {
-    if (hi - lo).abs() < 0.0005 {
-        format!("{lo:.3}")
+#[derive(Clone, Copy)]
+enum FeeUnit {
+    Gwei,
+    Mwei,
+}
+
+fn pick_fee_unit(max_gwei: f64) -> FeeUnit {
+    if max_gwei.abs() < 1.0 {
+        FeeUnit::Mwei
     } else {
-        format!("{lo:.2}-{hi:.2}")
+        FeeUnit::Gwei
+    }
+}
+
+fn format_fee_with_unit(gwei: f64, unit: FeeUnit) -> String {
+    match unit {
+        FeeUnit::Gwei => {
+            let s = strip_trailing_zeros(&format!("{gwei:.3}"));
+            format!("{s}G")
+        }
+        FeeUnit::Mwei => {
+            let mwei = gwei * 1000.0;
+            let s = strip_trailing_zeros(&format!("{mwei:.1}"));
+            format!("{s}M")
+        }
+    }
+}
+
+fn format_fee_value(gwei: f64) -> String {
+    format_fee_with_unit(gwei, pick_fee_unit(gwei))
+}
+
+fn strip_trailing_zeros(s: &str) -> String {
+    if let Some(dot) = s.find('.') {
+        let trimmed = s.trim_end_matches('0');
+        if trimmed.ends_with('.') {
+            trimmed[..dot].to_string()
+        } else {
+            trimmed.to_string()
+        }
+    } else {
+        s.to_string()
+    }
+}
+
+fn truncate_to(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else if max >= 2 {
+        let keep = max.saturating_sub(1);
+        let mut t: String = s.chars().take(keep).collect();
+        t.push('…');
+        t
+    } else if max == 1 {
+        s.chars().next().map(|c| c.to_string()).unwrap_or_default()
+    } else {
+        String::new()
+    }
+}
+
+fn format_fee_label(lo: f64, hi: f64, unit: FeeUnit) -> String {
+    if (hi - lo).abs() < 0.0005 {
+        format_fee_with_unit(lo, unit)
+    } else {
+        let lo_s = format_fee_with_unit(lo, unit);
+        let hi_s = format_fee_with_unit(hi, unit);
+        format!("{lo_s}-{hi_s}")
     }
 }
 
@@ -434,8 +511,8 @@ fn render_histogram_filter_matches(
     inner_width: usize,
     gap: usize,
 ) {
-    let raw_hists: Vec<(&str, &[(f64, f64)])> = if snapshot.show_aggregate {
-        vec![("", snapshot.aggregate_histogram.as_slice())]
+    let raw_hists: HistSlices<'_> = if snapshot.show_aggregate {
+        vec![("", 0, snapshot.aggregate_histogram.as_slice())]
     } else {
         snapshot
             .filters
@@ -445,13 +522,12 @@ fn render_histogram_filter_matches(
                 snapshot
                     .filter_histograms
                     .get(&f.id)
-                    .map(|h| (f.label.as_str(), h.as_slice()))
+                    .map(|h| (f.label.as_str(), f.color_index, h.as_slice()))
             })
             .collect()
     };
 
-    let sample_label_len = 6;
-    let bar_w = sample_label_len.max(3) as u16;
+    let bar_w: u16 = 3;
     let max_buckets = if (bar_w as usize + gap) > 0 {
         inner_width / (bar_w as usize + gap)
     } else {
@@ -459,39 +535,78 @@ fn render_histogram_filter_matches(
     }
     .max(2);
 
-    let mut entries: Vec<(f64, &str, String, u64)> = Vec::new();
-    for (prefix, hist) in &raw_hists {
+    let mut all_merged: Vec<(f64, f64, f64, &str, usize)> = Vec::new();
+    for (prefix, color_idx, hist) in &raw_hists {
         let merged = rebucket(hist, max_buckets);
-        for (lo, hi, count) in &merged {
-            let label = if prefix.is_empty() {
-                format_fee_label(*lo, *hi)
-            } else {
-                let fee = format_fee_label(*lo, *hi);
-                format!("{prefix}:{fee}")
-            };
-            entries.push((*lo, prefix, label, *count as u64));
+        for (lo, hi, count) in merged {
+            all_merged.push((lo, hi, count, prefix, *color_idx));
         }
+    }
+    let hist_max = all_merged
+        .iter()
+        .map(|(_, hi, _, _, _)| *hi)
+        .fold(0.0_f64, f64::max);
+    let unit = pick_fee_unit(hist_max);
+
+    let mut entries: Vec<(f64, &str, String, String, u64, usize)> = Vec::new();
+    for (lo, hi, count, prefix, color_idx) in &all_merged {
+        let fee = format_fee_label(*lo, *hi, unit);
+        entries.push((
+            *lo,
+            prefix,
+            fee,
+            prefix.to_string(),
+            *count as u64,
+            *color_idx,
+        ));
     }
     entries.sort_by(|a, b| {
         a.0.partial_cmp(&b.0)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.1.cmp(b.1))
     });
-    let bars: Vec<(String, u64)> = entries.into_iter().map(|(_, _, l, c)| (l, c)).collect();
 
-    let max_label_len = bars.iter().map(|(l, _)| l.len()).max().unwrap_or(3);
-    let dynamic_bar_w = max_label_len.max(3) as u16;
-    let bar_data: Vec<(&str, u64)> = bars.iter().map(|(l, v)| (l.as_str(), *v)).collect();
+    let bar_group: Vec<Bar> = entries
+        .iter()
+        .map(|(_, _, fee, prefix, value, color_idx)| {
+            let color = if snapshot.show_aggregate {
+                Color::White
+            } else {
+                filter_color(*color_idx)
+            };
+            let w = bar_w as usize;
+            let label = if prefix.is_empty() {
+                truncate_to(fee, w)
+            } else {
+                let fee_len = fee.len();
+                if fee_len >= w {
+                    truncate_to(fee, w)
+                } else {
+                    let remaining = w - fee_len;
+                    if remaining >= 2 {
+                        let pfx = truncate_to(prefix, remaining);
+                        format!("{pfx}{fee}")
+                    } else {
+                        truncate_to(fee, w)
+                    }
+                }
+            };
+            Bar::default()
+                .value(*value)
+                .label(Line::from(label))
+                .style(Style::default().fg(color))
+        })
+        .collect();
 
     let chart = BarChart::default()
         .block(
             Block::default()
-                .title("base fee histogram — filter matches (gwei) [h: switch]")
+                .title("base fee histogram — filter matches [h: switch]")
                 .borders(Borders::ALL),
         )
-        .bar_width(dynamic_bar_w)
+        .bar_width(bar_w)
         .bar_gap(gap as u16)
-        .data(&bar_data);
+        .data(BarGroup::default().bars(&bar_group));
     frame.render_widget(chart, area);
 }
 
@@ -518,13 +633,15 @@ fn render_histogram_all_blocks(
     .max(2);
 
     let merged = rebucket(&snapshot.all_blocks_histogram, max_buckets);
+    let hist_max = merged.iter().map(|(_, hi, _)| *hi).fold(0.0_f64, f64::max);
+    let unit = pick_fee_unit(hist_max);
 
     let enabled_filters: Vec<_> = snapshot.filters.iter().filter(|f| f.enabled).collect();
 
     let styled_bars: Vec<(String, u64, Style)> = merged
         .iter()
         .map(|(lo, hi, count)| {
-            let label = format_fee_label(*lo, *hi);
+            let label = format_fee_label(*lo, *hi, unit);
             let matching_colors: Vec<(u8, u8, u8)> = enabled_filters
                 .iter()
                 .filter(|f| {
@@ -568,7 +685,7 @@ fn render_histogram_all_blocks(
     let chart = BarChart::default()
         .block(
             Block::default()
-                .title("base fee histogram — all blocks (gwei) [h: switch]")
+                .title("base fee histogram — all blocks [h: switch]")
                 .borders(Borders::ALL),
         )
         .bar_width(dynamic_bar_w)
@@ -583,16 +700,33 @@ fn render_sidebar(
     frame: &mut Frame,
     area: Rect,
 ) {
+    let all_done = !app.chunk_states.is_empty() && app.chunk_states.iter().all(is_complete);
+    let chunk_h = if all_done {
+        1
+    } else {
+        let inner_w = area.width.saturating_sub(2).max(1) as usize;
+        let total_chunks = app.chunk_states.len().max(1);
+        let chunk_rows = total_chunks.div_ceil(inner_w) as u16;
+        (chunk_rows + 2).max(3)
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(4),
+            Constraint::Length(chunk_h),
             Constraint::Min(3),
             Constraint::Length(3),
         ])
         .split(area);
 
-    render_chunk_map(app, frame, chunks[0]);
+    if all_done {
+        let total = app.chunk_states.len();
+        let label = Paragraph::new(format!("chunks {total}/{total} ✓"))
+            .style(Style::default().fg(Color::Green));
+        frame.render_widget(label, chunks[0]);
+    } else {
+        render_chunk_map(app, frame, chunks[0]);
+    }
 
     let legend_lines: Vec<Line> = snapshot
         .filters
@@ -849,6 +983,7 @@ fn by_labels_width(by_min: f64, by_max: f64) -> u16 {
     (sample.len() + 2) as u16
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_crosshair(
     app: &App,
     tx_rect: Rect,
@@ -938,6 +1073,57 @@ fn data_to_row(data_y: f64, y_min: f64, y_max: f64, inner: Rect) -> Option<u16> 
     )
 }
 
+fn local_utc_offset_secs() -> i64 {
+    use std::sync::OnceLock;
+    static OFFSET: OnceLock<i64> = OnceLock::new();
+    *OFFSET.get_or_init(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe { libc::localtime_r(&now, &mut tm) };
+        tm.tm_gmtoff as i64
+    })
+}
+
+fn block_to_hour_frac(block_number: f64) -> f64 {
+    let utc_timestamp = BASE_GENESIS_TIMESTAMP as f64 + block_number * BASE_BLOCK_TIME_SECS as f64;
+    let offset = local_utc_offset_secs() as f64;
+    let local_secs = ((utc_timestamp + offset) % 86400.0 + 86400.0) % 86400.0;
+    local_secs / 86400.0
+}
+
+fn time_of_day_bg(hour_frac: f64) -> Color {
+    let angle = (hour_frac - 0.5) * std::f64::consts::TAU;
+    let day = (angle.cos() + 1.0) / 2.0;
+
+    let r = (15.0 + day * 25.0) as u8;
+    let g = (15.0 + day * 20.0) as u8;
+    let b = (35.0 - day * 15.0) as u8;
+    Color::Rgb(r, g, b)
+}
+
+fn paint_time_of_day_bg(frame: &mut Frame, inner: Rect, x_min: f64, x_max: f64) {
+    let buf = frame.buffer_mut();
+    let x_range = x_max - x_min;
+    if x_range <= 0.0 || inner.width == 0 {
+        return;
+    }
+    for col in inner.x..inner.x + inner.width {
+        let frac = (col - inner.x) as f64 / inner.width.saturating_sub(1).max(1) as f64;
+        let block = x_min + frac * x_range;
+        let hour_frac = block_to_hour_frac(block);
+        let bg = time_of_day_bg(hour_frac);
+        for row in inner.y..inner.y + inner.height {
+            if col < buf.area.x + buf.area.width && row < buf.area.y + buf.area.height {
+                let cell = &mut buf[(col, row)];
+                cell.set_bg(bg);
+            }
+        }
+    }
+}
+
 const CROSSHAIR_BG: Color = Color::Rgb(40, 40, 50);
 const CROSSHAIR_INTERSECT_BG: Color = Color::Rgb(60, 60, 75);
 
@@ -948,6 +1134,7 @@ fn highlight_cell(buf: &mut ratatui::buffer::Buffer, col: u16, row: u16, bg: Col
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_crosshair_highlight(
     frame: &mut Frame,
     ch: &Crosshair,
@@ -1020,7 +1207,7 @@ fn quantize(val: f64, min: f64, cell_size: f64) -> i64 {
     ((val - min) / cell_size).floor() as i64
 }
 
-fn cell_color(key: &[usize], grouped_filter_series: &[(String, usize, Vec<(f64, f64)>)]) -> Color {
+fn cell_color(key: &[usize], grouped_filter_series: &[FilterEntry]) -> Color {
     if key.len() == 1 {
         filter_color(grouped_filter_series[key[0]].1)
     } else {
@@ -1033,7 +1220,7 @@ fn cell_color(key: &[usize], grouped_filter_series: &[(String, usize, Vec<(f64, 
 }
 
 fn build_tx_overlays(
-    grouped_filter_series: &[(String, usize, Vec<(f64, f64)>)],
+    grouped_filter_series: &[FilterEntry],
     x_min: f64,
     cell_w: f64,
     y_min: f64,
@@ -1061,7 +1248,7 @@ fn build_tx_overlays(
     }
 
     let mut color_points: HashMap<Color, Vec<(f64, f64)>> = HashMap::new();
-    for (_i, (_label, _color_idx, series)) in grouped_filter_series.iter().enumerate() {
+    for (_label, _color_idx, series) in grouped_filter_series {
         for &(x, y) in series {
             if y > 0.0 {
                 let cx = quantize(x, x_min, cell_w);
@@ -1081,7 +1268,7 @@ fn build_tx_overlays(
 }
 
 fn build_base_fee_overlays(
-    grouped_filter_series: &[(String, usize, Vec<(f64, f64)>)],
+    grouped_filter_series: &[FilterEntry],
     base_fee_by_x: &HashMap<u64, f64>,
     x_min: f64,
     cell_w: f64,
@@ -1130,7 +1317,7 @@ fn x_axis_labels(x_min: f64, x_max: f64, available_chars: usize) -> Vec<String> 
     if range <= 0.0 {
         return vec![format!("{:.0}", x_min)];
     }
-    let max_labels = (available_chars / 12).max(2).min(7);
+    let max_labels = (available_chars / 12).clamp(2, 7);
     let step = range / (max_labels - 1) as f64;
     (0..max_labels)
         .map(|i| format!("{:.0}", x_min + step * i as f64))
@@ -1151,15 +1338,16 @@ fn y_labels_int(y_min: f64, y_max: f64) -> Vec<String> {
 }
 
 fn y_labels_gwei(y_min: f64, y_max: f64) -> Vec<String> {
+    let unit = pick_fee_unit(y_max);
     let mid = (y_min + y_max) / 2.0;
     let q1 = (y_min + mid) / 2.0;
     let q3 = (mid + y_max) / 2.0;
     vec![
-        format!("{:.3}", y_min),
-        format!("{:.3}", q1),
-        format!("{:.3}", mid),
-        format!("{:.3}", q3),
-        format!("{:.3}", y_max),
+        format_fee_with_unit(y_min, unit),
+        format_fee_with_unit(q1, unit),
+        format_fee_with_unit(mid, unit),
+        format_fee_with_unit(q3, unit),
+        format_fee_with_unit(y_max, unit),
     ]
 }
 
@@ -1171,10 +1359,10 @@ fn filter_color(index: usize) -> Color {
 const FILTER_PALETTE: [Color; 6] = [
     Color::Rgb(255, 0, 0),
     Color::Rgb(0, 0, 255),
-    Color::Rgb(0, 200, 0),
+    Color::Rgb(0, 255, 0),
     Color::Rgb(255, 255, 0),
-    Color::Rgb(0, 220, 220),
-    Color::Rgb(200, 0, 255),
+    Color::Rgb(0, 255, 255),
+    Color::Rgb(255, 0, 255),
 ];
 
 fn filter_rgb(index: usize) -> (u8, u8, u8) {
@@ -1184,53 +1372,6 @@ fn filter_rgb(index: usize) -> (u8, u8, u8) {
     }
 }
 
-fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
-    let rf = r as f64 / 255.0;
-    let gf = g as f64 / 255.0;
-    let bf = b as f64 / 255.0;
-    let max = rf.max(gf).max(bf);
-    let min = rf.min(gf).min(bf);
-    let delta = max - min;
-
-    let h = if delta < 1e-9 {
-        0.0
-    } else if (max - rf).abs() < 1e-9 {
-        60.0 * (((gf - bf) / delta) % 6.0)
-    } else if (max - gf).abs() < 1e-9 {
-        60.0 * (((bf - rf) / delta) + 2.0)
-    } else {
-        60.0 * (((rf - gf) / delta) + 4.0)
-    };
-    let h = if h < 0.0 { h + 360.0 } else { h };
-    let s = if max < 1e-9 { 0.0 } else { delta / max };
-    (h, s, max)
-}
-
-fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
-    let c = v * s;
-    let hp = h / 60.0;
-    let x = c * (1.0 - ((hp % 2.0) - 1.0).abs());
-    let (r1, g1, b1) = if hp < 1.0 {
-        (c, x, 0.0)
-    } else if hp < 2.0 {
-        (x, c, 0.0)
-    } else if hp < 3.0 {
-        (0.0, c, x)
-    } else if hp < 4.0 {
-        (0.0, x, c)
-    } else if hp < 5.0 {
-        (x, 0.0, c)
-    } else {
-        (c, 0.0, x)
-    };
-    let m = v - c;
-    (
-        ((r1 + m) * 255.0).round() as u8,
-        ((g1 + m) * 255.0).round() as u8,
-        ((b1 + m) * 255.0).round() as u8,
-    )
-}
-
 fn blend_colors(colors: &[(u8, u8, u8)]) -> Color {
     if colors.is_empty() {
         return Color::White;
@@ -1238,23 +1379,17 @@ fn blend_colors(colors: &[(u8, u8, u8)]) -> Color {
     if colors.len() == 1 {
         return Color::Rgb(colors[0].0, colors[0].1, colors[0].2);
     }
-    // HSV blend: average hues (circular mean), take max saturation and value.
-    // This gives perceptually correct blends (red+blue=purple, not pink).
     let n = colors.len() as f64;
-    let mut sin_sum = 0.0_f64;
-    let mut cos_sum = 0.0_f64;
-    let mut s_max = 0.0_f64;
-    let mut v_max = 0.0_f64;
+    let mut r_sum = 0.0_f64;
+    let mut g_sum = 0.0_f64;
+    let mut b_sum = 0.0_f64;
     for &(r, g, b) in colors {
-        let (h, s, v) = rgb_to_hsv(r, g, b);
-        let h_rad = h.to_radians();
-        sin_sum += h_rad.sin();
-        cos_sum += h_rad.cos();
-        s_max = s_max.max(s);
-        v_max = v_max.max(v);
+        r_sum += (r as f64 / 255.0).powi(2);
+        g_sum += (g as f64 / 255.0).powi(2);
+        b_sum += (b as f64 / 255.0).powi(2);
     }
-    let avg_h = (sin_sum / n).atan2(cos_sum / n).to_degrees();
-    let avg_h = if avg_h < 0.0 { avg_h + 360.0 } else { avg_h };
-    let (r, g, b) = hsv_to_rgb(avg_h, s_max, v_max);
+    let r = ((r_sum / n).sqrt() * 255.0).round() as u8;
+    let g = ((g_sum / n).sqrt() * 255.0).round() as u8;
+    let b = ((b_sum / n).sqrt() * 255.0).round() as u8;
     Color::Rgb(r, g, b)
 }

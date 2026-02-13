@@ -41,7 +41,7 @@ impl Analyzer {
                 };
                 let mut matches = Vec::new();
                 for tx in &block.transactions {
-                    if filter.kind.matches(tx.from_addr(), tx.to_addr()) {
+                    if filter.kind.matches(tx.sender(), tx.to_addr()) {
                         matches.push(tx.hash);
                         if filter.enabled {
                             aggregate_matches.insert(tx.hash);
@@ -54,10 +54,10 @@ impl Analyzer {
                     series.push((block_number as f64, count));
                 }
 
-                if count > 0.0 {
-                    if let Some(hist) = self.snapshot.filter_histograms.get_mut(&filter.id) {
-                        increment_bucket(hist, fee_bucket(base_fee_gwei), count);
-                    }
+                if count > 0.0
+                    && let Some(hist) = self.snapshot.filter_histograms.get_mut(&filter.id)
+                {
+                    increment_bucket(hist, fee_bucket(base_fee_gwei), count);
                 }
             }
 

@@ -35,6 +35,10 @@ impl LogBuffer {
         buf.push_back(line);
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().unwrap().is_empty()
+    }
+
     /// Returns the most recent `n` log lines.
     pub fn recent(&self, n: usize) -> Vec<(Level, String)> {
         let buf = self.inner.lock().unwrap();
