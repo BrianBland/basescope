@@ -1,4 +1,4 @@
-# basescope
+# basescope 🔬
 
 A terminal UI for analyzing transaction activity on Base. Fetches blocks over JSON-RPC, matches transactions against user-defined filters (by sender, recipient, or both), and renders live charts showing tx counts, base fee trends, and fee distribution histograms.
 
