@@ -11,33 +11,48 @@ use ratatui::widgets::{
 use tracing::Level;
 
 use crate::domain::{approx_head_block, BASE_BLOCK_TIME_SECS, BASE_GENESIS_TIMESTAMP};
-use crate::tui::{App, AppMode, ChunkState, HistogramMode, RangeField};
+use crate::tui::{App, AppMode, BottomPanel, ChunkState, HistogramMode, RangeField};
 
 type FilterEntry = (String, usize, Vec<(f64, f64)>);
 type FilterSeries = Vec<FilterEntry>;
 type HistSlices<'a> = Vec<(&'a str, usize, &'a [(f64, f64)])>;
 
-const LOG_PANEL_HEIGHT: u16 = 8;
+const BOTTOM_PANEL_HEIGHT: u16 = 8;
 
 pub fn render(app: &App, frame: &mut Frame) {
     let outer = frame.area();
 
     let all_done = !app.chunk_states.is_empty() && app.chunk_states.iter().all(is_complete);
-    let show_logs = app.show_logs && !(all_done && app.log_buffer.is_empty());
 
-    if show_logs {
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(LOG_PANEL_HEIGHT)])
-            .split(outer);
+    let effective_panel = match app.bottom_panel {
+        BottomPanel::Logs if all_done && app.log_buffer.is_empty() => BottomPanel::Hidden,
+        other => other,
+    };
 
-        let main_area = layout[0];
-        let log_area = layout[1];
+    match effective_panel {
+        BottomPanel::Logs => {
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(BOTTOM_PANEL_HEIGHT)])
+                .split(outer);
+            render_main(app, frame, layout[0]);
+            render_log_panel(app, frame, layout[1]);
+        }
+        BottomPanel::Rpc => {
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(BOTTOM_PANEL_HEIGHT)])
+                .split(outer);
+            render_main(app, frame, layout[0]);
+            render_rpc_panel(app, frame, layout[1]);
+        }
+        BottomPanel::Hidden => {
+            render_main(app, frame, outer);
+        }
+    }
 
-        render_main(app, frame, main_area);
-        render_log_panel(app, frame, log_area);
-    } else {
-        render_main(app, frame, outer);
+    if app.show_help {
+        render_help_panel(app, frame, outer);
     }
 }
 
@@ -78,8 +93,7 @@ fn render_range_input(app: &App, frame: &mut Frame, area: Rect) {
     let hint = Paragraph::new(format!("approx head block: {}", approx_head_block()));
     frame.render_widget(hint, layout[3]);
 
-    let instructions = Paragraph::new("Tab: switch field  Enter: continue  q: quit")
-        .block(Block::default().borders(Borders::TOP));
+    let instructions = Paragraph::new("?: help").block(Block::default().borders(Borders::TOP));
     frame.render_widget(instructions, layout[4]);
 
     let cursor_x = match app.range_field {
@@ -152,9 +166,7 @@ fn render_filter_input(app: &App, frame: &mut Frame, area: Rect) {
         layout[2].y + 1,
     ));
 
-    let instructions =
-        Paragraph::new("Enter: add filter (label=to:0x… | to:0x…)  Enter∅: scan  d: del  q: quit")
-            .block(Block::default().borders(Borders::TOP));
+    let instructions = Paragraph::new("?: help").block(Block::default().borders(Borders::TOP));
     frame.render_widget(instructions, layout[3]);
 
     if !app.status_message.is_empty() {
@@ -173,7 +185,8 @@ fn render_filter_input(app: &App, frame: &mut Frame, area: Rect) {
 fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
+        .horizontal_margin(1)
+        .vertical_margin(0)
         .constraints([
             Constraint::Percentage(40),
             Constraint::Percentage(30),
@@ -744,44 +757,42 @@ fn render_sidebar(
         Paragraph::new(legend_lines).block(Block::default().title("filters").borders(Borders::ALL));
     frame.render_widget(legend, chunks[1]);
 
-    let hints = match app.mode {
-        AppMode::Fetching | AppMode::Results => {
-            "1-9: toggle  a: agg  g: gran  h: hist  l: logs  mouse: crosshair  q: quit"
-        }
-        _ => "l: logs  q: quit",
-    };
-    let hint = Paragraph::new(hints).block(Block::default().borders(Borders::TOP));
+    let hint = Paragraph::new("?: help").block(Block::default().borders(Borders::TOP));
     frame.render_widget(hint, chunks[2]);
 }
 
-// Braille fill levels from empty to full, filling bottom-to-top.
-// Both columns fill simultaneously so the bar rises evenly.
 // Dot layout:  1 4    Bit values: 1   8
 //              2 5                2  16
 //              3 6                4  32
 //              7 8               64 128
-const BRAILLE_FILL: [char; 9] = [
-    '\u{2800}', // 0/8: empty
-    '\u{2880}', // 1/8: dots 8       (128)
-    '\u{28C0}', // 2/8: dots 7,8     (64+128)
-    '\u{28E0}', // 3/8: dots 6,7,8   (32+64+128)
-    '\u{28E4}', // 4/8: dots 3,6,7,8 (4+32+64+128)
-    '\u{28F4}', // 5/8: dots 3,5,6,7,8 (4+16+32+64+128)
-    '\u{28F6}', // 6/8: dots 2,3,5,6,7,8 (2+4+16+32+64+128)
-    '\u{28FE}', // 7/8: dots 2,3,4,5,6,7,8 (2+4+8+16+32+64+128)
-    '\u{28FF}', // 8/8: all dots
-];
+const BRAILLE_FILL_LEFT: [char; 9] = ['⠀', '⠁', '⠉', '⠋', '⠛', '⠟', '⠿', '⡿', '⣿'];
+const BRAILLE_FILL_RIGHT: [char; 9] = ['⠀', '⢀', '⣀', '⣠', '⣤', '⣴', '⣶', '⣾', '⣿'];
 
-fn chunk_braille(state: ChunkState, progress: f32) -> (char, Color) {
+fn chunk_braille(state: ChunkState, progress: f32, forward: bool) -> (char, Color) {
+    let fill = if forward {
+        &BRAILLE_FILL_LEFT
+    } else {
+        &BRAILLE_FILL_RIGHT
+    };
     match state {
-        ChunkState::Pending => (BRAILLE_FILL[0], Color::DarkGray),
-        ChunkState::Cached => (BRAILLE_FILL[8], Color::Blue),
+        ChunkState::Pending => (fill[0], Color::DarkGray),
+        ChunkState::Cached => (fill[8], Color::Blue),
         ChunkState::Fetching => {
-            let level = (progress * 8.0).round() as usize;
-            (BRAILLE_FILL[level.min(8)], Color::Yellow)
+            let level = (progress * 8.0).round().max(1.0) as usize;
+            (fill[level.min(8)], Color::Yellow)
         }
-        ChunkState::Done => (BRAILLE_FILL[8], Color::Green),
-        ChunkState::Failed => (BRAILLE_FILL[8], Color::Red),
+        ChunkState::Done => (fill[8], Color::Green),
+        ChunkState::Failed => (fill[8], Color::Red),
+    }
+}
+
+fn chunk_forward(states: &[ChunkState], idx: usize) -> bool {
+    let before = idx > 0 && is_complete(&states[idx - 1]);
+    let after = idx + 1 < states.len() && is_complete(&states[idx + 1]);
+    match (before, after) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => true,
     }
 }
 
@@ -816,15 +827,30 @@ fn chunk_spans_all(app: &App) -> Vec<Span<'static>> {
         .enumerate()
         .map(|(i, state)| {
             let progress = app.chunk_progress.get(i).copied().unwrap_or(0.0);
-            let (ch, color) = chunk_braille(*state, progress);
+            let forward = chunk_forward(&app.chunk_states, i);
+            let (ch, color) = chunk_braille(*state, progress, forward);
             Span::styled(ch.to_string(), Style::default().fg(color))
         })
         .collect()
 }
 
+fn active_frontier(states: &[ChunkState]) -> usize {
+    if let Some(pos) = states
+        .iter()
+        .position(|s| matches!(s, ChunkState::Fetching))
+    {
+        return pos;
+    }
+    if let Some(last_done) = states.iter().rposition(is_complete) {
+        return last_done;
+    }
+    0
+}
+
 fn chunk_spans_windowed(app: &App, capacity: usize) -> Vec<Span<'static>> {
     let total = app.chunk_states.len();
     let ellipsis = Span::styled("…", Style::default().fg(Color::DarkGray));
+    let context = 3;
 
     let first_incomplete = app
         .chunk_states
@@ -837,7 +863,6 @@ fn chunk_spans_windowed(app: &App, capacity: usize) -> Vec<Span<'static>> {
         .rposition(|s| !is_complete(s))
         .unwrap_or(0);
 
-    let context = 3;
     let window_start = first_incomplete.saturating_sub(context);
     let window_end = (last_incomplete + context + 1).min(total);
     let window_len = window_end - window_start;
@@ -849,7 +874,8 @@ fn chunk_spans_windowed(app: &App, capacity: usize) -> Vec<Span<'static>> {
         }
         for i in window_start..window_end {
             let progress = app.chunk_progress.get(i).copied().unwrap_or(0.0);
-            let (ch, color) = chunk_braille(app.chunk_states[i], progress);
+            let forward = chunk_forward(&app.chunk_states, i);
+            let (ch, color) = chunk_braille(app.chunk_states[i], progress, forward);
             spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
         }
         if window_end < total {
@@ -857,18 +883,26 @@ fn chunk_spans_windowed(app: &App, capacity: usize) -> Vec<Span<'static>> {
         }
         spans
     } else {
-        let usable = capacity.saturating_sub(1);
-        let start = first_incomplete
-            .saturating_sub(context)
-            .min(total.saturating_sub(usable));
+        let usable = capacity.saturating_sub(2);
+        let anchor = active_frontier(&app.chunk_states);
+        let half = usable / 2;
+        let start = if anchor <= half {
+            0
+        } else if anchor + (usable - half) >= total {
+            total.saturating_sub(usable)
+        } else {
+            anchor - half
+        };
         let end = (start + usable).min(total);
+
         let mut spans = Vec::new();
         if start > 0 {
             spans.push(ellipsis.clone());
         }
         for i in start..end {
             let progress = app.chunk_progress.get(i).copied().unwrap_or(0.0);
-            let (ch, color) = chunk_braille(app.chunk_states[i], progress);
+            let forward = chunk_forward(&app.chunk_states, i);
+            let (ch, color) = chunk_braille(app.chunk_states[i], progress, forward);
             spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
         }
         if end < total {
@@ -942,6 +976,139 @@ fn render_log_panel(app: &App, frame: &mut Frame, area: Rect) {
 
     let block = Block::default().title("logs").borders(Borders::ALL);
     let paragraph = Paragraph::new(log_lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+fn rpc_endpoint_line(ep: &crate::rpc::EndpointInfo, max_url_len: usize) -> Line<'static> {
+    let bar_width = 10;
+    let filled = (ep.score * bar_width as f64).round() as usize;
+    let empty = bar_width - filled;
+    let bar: String = "█".repeat(filled) + &"░".repeat(empty);
+
+    let bar_color = if ep.score >= 0.7 {
+        Color::Green
+    } else if ep.score >= 0.3 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+
+    let url_display = truncate_to(&ep.url, max_url_len);
+
+    Line::from(vec![
+        Span::styled(format!("{bar} "), Style::default().fg(bar_color)),
+        Span::styled(
+            format!("{:>3.0}% ", ep.score * 100.0),
+            Style::default().fg(bar_color),
+        ),
+        Span::styled(url_display, Style::default().fg(Color::Gray)),
+    ])
+}
+
+fn render_rpc_panel(app: &App, frame: &mut Frame, area: Rect) {
+    let endpoints = app.rpc_client.endpoint_info();
+    let inner_height = area.height.saturating_sub(2).max(1) as usize;
+
+    if endpoints.len() <= inner_height {
+        let inner_width = area.width.saturating_sub(2) as usize;
+        let url_max = inner_width.saturating_sub(16);
+        let lines: Vec<Line> = endpoints
+            .iter()
+            .map(|ep| rpc_endpoint_line(ep, url_max))
+            .collect();
+        let block = Block::default()
+            .title("rpc endpoints")
+            .borders(Borders::ALL);
+        let paragraph = Paragraph::new(lines).block(block);
+        frame.render_widget(paragraph, area);
+    } else {
+        let cols = endpoints.len().div_ceil(inner_height);
+        let constraints: Vec<Constraint> = (0..cols)
+            .map(|_| Constraint::Ratio(1, cols as u32))
+            .collect();
+
+        let block = Block::default()
+            .title("rpc endpoints")
+            .borders(Borders::ALL);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let col_areas = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(constraints)
+            .split(inner);
+
+        for (col_idx, col_area) in col_areas.iter().enumerate() {
+            let start = col_idx * inner_height;
+            let end = (start + inner_height).min(endpoints.len());
+            let url_max = (col_area.width as usize).saturating_sub(16);
+            let lines: Vec<Line> = endpoints[start..end]
+                .iter()
+                .map(|ep| rpc_endpoint_line(ep, url_max))
+                .collect();
+            let paragraph = Paragraph::new(lines);
+            frame.render_widget(paragraph, *col_area);
+        }
+    }
+}
+
+fn help_lines(mode: AppMode) -> Vec<Line<'static>> {
+    let key_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(Color::Gray);
+
+    let mut entries: Vec<(&str, &str)> = vec![("?", "toggle this help"), ("q", "quit")];
+
+    match mode {
+        AppMode::RangeInput => {
+            entries.push(("Tab", "switch field"));
+            entries.push(("Enter", "continue"));
+        }
+        AppMode::FilterInput => {
+            entries.push(("Enter", "add filter / start scan"));
+            entries.push(("d", "delete selected filter"));
+            entries.push(("↑/↓", "select filter"));
+        }
+        AppMode::Fetching | AppMode::Results => {
+            entries.push(("1-9", "toggle filter"));
+            entries.push(("a", "aggregate mode"));
+            entries.push(("g", "cycle granularity"));
+            entries.push(("h", "switch histogram"));
+            entries.push(("l", "toggle logs"));
+            entries.push(("r", "toggle rpc info"));
+            entries.push(("mouse", "crosshair"));
+        }
+    }
+
+    entries
+        .into_iter()
+        .map(|(key, desc)| {
+            Line::from(vec![
+                Span::styled(format!("{key:>5}"), key_style),
+                Span::styled(format!("  {desc}"), desc_style),
+            ])
+        })
+        .collect()
+}
+
+fn render_help_panel(app: &App, frame: &mut Frame, outer: Rect) {
+    let lines = help_lines(app.mode);
+    let panel_h = (lines.len() as u16 + 2).min(outer.height);
+    let panel_w = 30u16.min(outer.width);
+    let area = Rect {
+        x: outer.x + outer.width.saturating_sub(panel_w),
+        y: outer.y,
+        width: panel_w,
+        height: panel_h,
+    };
+
+    frame.render_widget(ratatui::widgets::Clear, area);
+    let block = Block::default()
+        .title("help")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::Black));
+    let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
 }
 

@@ -27,6 +27,13 @@ pub enum AppMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BottomPanel {
+    Hidden,
+    Logs,
+    Rpc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeField {
     Start,
     End,
@@ -67,11 +74,12 @@ pub struct App {
     pub chunk_states: Vec<ChunkState>,
     pub chunk_progress: Vec<f32>,
     pub chunk_ranges: Vec<(u64, u64)>,
-    pub show_logs: bool,
+    pub bottom_panel: BottomPanel,
     pub granularity: usize,
     pub mouse_col: u16,
     pub mouse_row: u16,
     pub hist_mode: HistogramMode,
+    pub show_help: bool,
     pub tx_chart_rect: Cell<Rect>,
     pub bf_chart_rect: Cell<Rect>,
 }
@@ -104,11 +112,12 @@ impl App {
             chunk_states: Vec::new(),
             chunk_progress: Vec::new(),
             chunk_ranges: Vec::new(),
-            show_logs: true,
+            bottom_panel: BottomPanel::Logs,
             granularity: 1,
             mouse_col: 0,
             mouse_row: 0,
             hist_mode: HistogramMode::FilterMatches,
+            show_help: false,
             tx_chart_rect: Cell::new(Rect::default()),
             bf_chart_rect: Cell::new(Rect::default()),
         };
@@ -199,10 +208,25 @@ impl App {
             return Ok(());
         }
 
+        if key.code == KeyCode::Char('?') {
+            self.show_help = !self.show_help;
+            return Ok(());
+        }
+
         if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
             match key.code {
                 KeyCode::Char('l') => {
-                    self.show_logs = !self.show_logs;
+                    self.bottom_panel = match self.bottom_panel {
+                        BottomPanel::Logs => BottomPanel::Hidden,
+                        _ => BottomPanel::Logs,
+                    };
+                    return Ok(());
+                }
+                KeyCode::Char('r') => {
+                    self.bottom_panel = match self.bottom_panel {
+                        BottomPanel::Rpc => BottomPanel::Hidden,
+                        _ => BottomPanel::Rpc,
+                    };
                     return Ok(());
                 }
                 KeyCode::Char('g') => {

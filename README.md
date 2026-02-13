@@ -78,6 +78,7 @@ All CLI flags can be set via environment variables or a `.env` file:
 | `g` | Cycle granularity (1 → 10 → 100 → 1) |
 | `h` | Switch histogram between filter matches and all blocks |
 | `l` | Toggle log panel |
+| `r` | Toggle RPC info panel |
 | `q` | Quit |
 
 Mouse movement over the top two charts shows a crosshair with block number and base fee.

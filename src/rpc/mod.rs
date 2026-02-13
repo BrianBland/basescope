@@ -16,7 +16,6 @@ const AI_INCREMENT: f64 = 0.05;
 const MD_FACTOR: f64 = 0.5;
 const HEAL_RATE: f64 = 0.01;
 const HEAL_INTERVAL_SECS: f64 = 1.0;
-const MIN_USABLE_SCORE: f64 = 0.1;
 
 struct EndpointState {
     score: f64,
@@ -26,11 +25,16 @@ struct EndpointState {
 
 struct Scorer {
     endpoints: Vec<EndpointState>,
+    rng_state: u64,
 }
 
 impl Scorer {
     fn new(urls: &[String]) -> Self {
         let now = Instant::now();
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
         Self {
             endpoints: urls
                 .iter()
@@ -40,7 +44,15 @@ impl Scorer {
                     url: url.clone(),
                 })
                 .collect(),
+            rng_state: seed | 1,
         }
+    }
+
+    fn next_f64(&mut self) -> f64 {
+        self.rng_state ^= self.rng_state << 13;
+        self.rng_state ^= self.rng_state >> 7;
+        self.rng_state ^= self.rng_state << 17;
+        (self.rng_state as f64) / (u64::MAX as f64)
     }
 
     fn heal_scores(&mut self) {
@@ -55,23 +67,23 @@ impl Scorer {
         }
     }
 
-    fn pick_best(&mut self) -> usize {
+    fn pick_weighted(&mut self) -> usize {
         self.heal_scores();
-        let mut best_usable_idx: Option<usize> = None;
-        let mut best_usable_score = f64::NEG_INFINITY;
-        let mut best_any_idx = 0;
-        let mut best_any_score = f64::NEG_INFINITY;
+
+        let total: f64 = self.endpoints.iter().map(|ep| ep.score).sum();
+        if total <= 0.0 {
+            return 0;
+        }
+
+        let r = self.next_f64() * total;
+        let mut cumulative = 0.0;
         for (i, ep) in self.endpoints.iter().enumerate() {
-            if ep.score > best_any_score {
-                best_any_score = ep.score;
-                best_any_idx = i;
-            }
-            if ep.score >= MIN_USABLE_SCORE && ep.score > best_usable_score {
-                best_usable_score = ep.score;
-                best_usable_idx = Some(i);
+            cumulative += ep.score;
+            if r < cumulative {
+                return i;
             }
         }
-        best_usable_idx.unwrap_or(best_any_idx)
+        self.endpoints.len() - 1
     }
 
     fn record_success(&mut self, idx: usize) {
@@ -93,6 +105,11 @@ impl Scorer {
         }
     }
 
+}
+
+pub struct EndpointInfo {
+    pub url: String,
+    pub score: f64,
 }
 
 #[derive(Clone)]
@@ -124,8 +141,21 @@ impl RpcClient {
         })
     }
 
+    pub fn endpoint_info(&self) -> Vec<EndpointInfo> {
+        let mut scorer = self.scorer.lock();
+        scorer.heal_scores();
+        scorer
+            .endpoints
+            .iter()
+            .map(|ep| EndpointInfo {
+                url: ep.url.clone(),
+                score: ep.score,
+            })
+            .collect()
+    }
+
     fn pick_provider(&self) -> (usize, &RootProvider<AnyNetwork>) {
-        let idx = self.scorer.lock().pick_best();
+        let idx = self.scorer.lock().pick_weighted();
         (idx, &self.providers[idx])
     }
 
