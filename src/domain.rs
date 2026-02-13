@@ -167,6 +167,101 @@ pub struct ChunkData {
     pub blocks: Vec<BlockRecord>,
 }
 
+/// Columnar serialization layout for ChunkData. Groups identical fields together
+/// so zstd can exploit redundancy across transactions (repeated addresses,
+/// similar gas values, etc.). Hashes are isolated so their entropy doesn't
+/// pollute the compressor window for other fields.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ColumnarChunkData {
+    pub start_block: u64,
+    pub end_block: u64,
+    pub block_numbers: Vec<u64>,
+    pub block_timestamps: Vec<u64>,
+    pub block_base_fees: Vec<u128>,
+    /// Number of transactions in each block (needed to reconstruct nesting).
+    pub block_tx_counts: Vec<u32>,
+    pub tx_hashes: Vec<[u8; 32]>,
+    pub tx_froms: Vec<[u8; 20]>,
+    pub tx_tos: Vec<Option<[u8; 20]>>,
+    pub tx_gas_used: Vec<u64>,
+    pub tx_max_priority_fees: Vec<u128>,
+    pub tx_max_fees: Vec<u128>,
+}
+
+impl From<&ChunkData> for ColumnarChunkData {
+    fn from(chunk: &ChunkData) -> Self {
+        let block_count = chunk.blocks.len();
+        let tx_count: usize = chunk.blocks.iter().map(|b| b.transactions.len()).sum();
+
+        let mut col = ColumnarChunkData {
+            start_block: chunk.start_block,
+            end_block: chunk.end_block,
+            block_numbers: Vec::with_capacity(block_count),
+            block_timestamps: Vec::with_capacity(block_count),
+            block_base_fees: Vec::with_capacity(block_count),
+            block_tx_counts: Vec::with_capacity(block_count),
+            tx_hashes: Vec::with_capacity(tx_count),
+            tx_froms: Vec::with_capacity(tx_count),
+            tx_tos: Vec::with_capacity(tx_count),
+            tx_gas_used: Vec::with_capacity(tx_count),
+            tx_max_priority_fees: Vec::with_capacity(tx_count),
+            tx_max_fees: Vec::with_capacity(tx_count),
+        };
+
+        for block in &chunk.blocks {
+            col.block_numbers.push(block.number);
+            col.block_timestamps.push(block.timestamp);
+            col.block_base_fees.push(block.base_fee);
+            col.block_tx_counts.push(block.transactions.len() as u32);
+            for tx in &block.transactions {
+                col.tx_hashes.push(tx.hash);
+                col.tx_froms.push(tx.from);
+                col.tx_tos.push(tx.to);
+                col.tx_gas_used.push(tx.gas_used);
+                col.tx_max_priority_fees.push(tx.max_priority_fee);
+                col.tx_max_fees.push(tx.max_fee);
+            }
+        }
+
+        col
+    }
+}
+
+impl From<ColumnarChunkData> for ChunkData {
+    fn from(col: ColumnarChunkData) -> Self {
+        let mut blocks = Vec::with_capacity(col.block_numbers.len());
+        let mut tx_offset = 0usize;
+
+        for i in 0..col.block_numbers.len() {
+            let tx_count = col.block_tx_counts[i] as usize;
+            let mut transactions = Vec::with_capacity(tx_count);
+            for j in tx_offset..tx_offset + tx_count {
+                transactions.push(TxRecord {
+                    hash: col.tx_hashes[j],
+                    from: col.tx_froms[j],
+                    to: col.tx_tos[j],
+                    gas_used: col.tx_gas_used[j],
+                    max_priority_fee: col.tx_max_priority_fees[j],
+                    max_fee: col.tx_max_fees[j],
+                });
+            }
+            tx_offset += tx_count;
+            blocks.push(BlockRecord {
+                number: col.block_numbers[i],
+                timestamp: col.block_timestamps[i],
+                base_fee: col.block_base_fees[i],
+                transactions,
+            });
+        }
+
+        ChunkData {
+            start_block: col.start_block,
+            end_block: col.end_block,
+            blocks,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AnalysisSnapshot {
     /// (block_number, matching_tx_count) per filter.
