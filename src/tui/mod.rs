@@ -46,6 +46,78 @@ pub enum Granularity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScaleMode {
+    Linear,
+    Log10,
+    Symlog,
+    Sqrt,
+}
+
+impl ScaleMode {
+    pub fn apply(self, v: f64) -> f64 {
+        match self {
+            ScaleMode::Linear => v,
+            ScaleMode::Log10 => {
+                if v <= 0.0 {
+                    0.0
+                } else {
+                    v.log10()
+                }
+            }
+            ScaleMode::Symlog => {
+                let threshold = 1.0;
+                if v.abs() < threshold {
+                    v
+                } else {
+                    v.signum() * (v.abs().log10() + threshold)
+                }
+            }
+            ScaleMode::Sqrt => {
+                if v <= 0.0 {
+                    0.0
+                } else {
+                    v.sqrt()
+                }
+            }
+        }
+    }
+
+    pub fn invert(self, v: f64) -> f64 {
+        match self {
+            ScaleMode::Linear => v,
+            ScaleMode::Log10 => 10.0_f64.powf(v),
+            ScaleMode::Symlog => {
+                let threshold = 1.0;
+                if v.abs() < threshold {
+                    v
+                } else {
+                    v.signum() * 10.0_f64.powf(v.abs() - threshold)
+                }
+            }
+            ScaleMode::Sqrt => v * v,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ScaleMode::Linear => "",
+            ScaleMode::Log10 => " [log]",
+            ScaleMode::Symlog => " [symlog]",
+            ScaleMode::Sqrt => " [sqrt]",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            ScaleMode::Linear => ScaleMode::Log10,
+            ScaleMode::Log10 => ScaleMode::Symlog,
+            ScaleMode::Symlog => ScaleMode::Sqrt,
+            ScaleMode::Sqrt => ScaleMode::Linear,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistogramMode {
     FilterMatches,
     AllBlocks,
@@ -87,6 +159,7 @@ pub struct App {
     pub mouse_col: u16,
     pub mouse_row: u16,
     pub hist_mode: HistogramMode,
+    pub scale_mode: ScaleMode,
     pub show_help: bool,
     pub tx_chart_rect: Cell<Rect>,
     pub bf_chart_rect: Cell<Rect>,
@@ -127,6 +200,7 @@ impl App {
             mouse_col: 0,
             mouse_row: 0,
             hist_mode: HistogramMode::FilterMatches,
+            scale_mode: ScaleMode::Linear,
             show_help: false,
             tx_chart_rect: Cell::new(Rect::default()),
             bf_chart_rect: Cell::new(Rect::default()),
@@ -263,6 +337,10 @@ impl App {
                         HistogramMode::FilterMatches => HistogramMode::AllBlocks,
                         HistogramMode::AllBlocks => HistogramMode::FilterMatches,
                     };
+                    return Ok(());
+                }
+                KeyCode::Char('s') => {
+                    self.scale_mode = self.scale_mode.next();
                     return Ok(());
                 }
                 KeyCode::Char('a') => {

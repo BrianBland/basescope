@@ -11,7 +11,9 @@ use ratatui::widgets::{
 use tracing::Level;
 
 use crate::domain::{approx_head_block, BASE_BLOCK_TIME_SECS, BASE_GENESIS_TIMESTAMP};
-use crate::tui::{App, AppMode, BottomPanel, ChunkState, Granularity, HistogramMode, RangeField};
+use crate::tui::{
+    App, AppMode, BottomPanel, ChunkState, Granularity, HistogramMode, RangeField, ScaleMode,
+};
 
 type FilterEntry = (String, usize, Vec<(f64, f64)>);
 type FilterSeries = Vec<FilterEntry>;
@@ -228,7 +230,12 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         .collect();
 
     let grouped_base_fee = group_series_avg(&snapshot.base_fee_series, g);
-    let (by_min, by_max) = series_y_bounds(&[&grouped_base_fee]);
+    let scale = app.scale_mode;
+    let scaled_base_fee: Vec<(f64, f64)> = grouped_base_fee
+        .iter()
+        .map(|(x, y)| (*x, scale.apply(*y)))
+        .collect();
+    let (by_min, by_max) = series_y_bounds(&[&scaled_base_fee]);
 
     let tx_series_refs: Vec<&[(f64, f64)]> = grouped_filter_series
         .iter()
@@ -236,7 +243,9 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         .collect();
     let (ty_min, ty_max) = series_y_bounds(&tx_series_refs);
 
-    let y_label_w = by_labels_width(by_min, by_max);
+    let original_by_max = scale.invert(by_max);
+    let original_by_min = scale.invert(by_min);
+    let y_label_w = by_labels_width(original_by_min, original_by_max);
     let graph_w_chars = chart_inner(layout[0], y_label_w).width as f64;
     let x_range = x_max - x_min;
     let cell_w = if graph_w_chars > 0.0 && x_range > 0.0 {
@@ -258,6 +267,7 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         y_label_w,
         &grouped_base_fee,
     );
+    let scaled_crosshair_y = crosshair.as_ref().map(|ch| scale.apply(ch.base_fee_y));
 
     let gran_suffix = app.granularity_label();
 
@@ -308,22 +318,22 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         );
     frame.render_widget(tx_chart, layout[0]);
 
-    let by_labels = y_labels_gwei(by_min, by_max);
+    let by_labels = scaled_y_labels_gwei(by_min, by_max, scale);
 
-    let base_fee_by_x: HashMap<u64, f64> = grouped_base_fee
+    let scaled_base_fee_by_x: HashMap<u64, f64> = scaled_base_fee
         .iter()
         .map(|(x, y)| (*x as u64, *y))
         .collect();
 
     let overlay_series =
-        build_base_fee_overlays(&grouped_filter_series, &base_fee_by_x, x_min, cell_w);
+        build_base_fee_overlays(&grouped_filter_series, &scaled_base_fee_by_x, x_min, cell_w);
 
     let base_fee_dataset = Dataset::default()
         .name("base fee")
         .marker(ratatui::symbols::Marker::Braille)
         .graph_type(GraphType::Line)
         .style(Style::default().fg(Color::DarkGray))
-        .data(&grouped_base_fee);
+        .data(&scaled_base_fee);
 
     let mut bf_datasets = vec![base_fee_dataset];
     for (color, series) in &overlay_series {
@@ -336,10 +346,11 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         );
     }
 
+    let scale_suffix = scale.label();
     let base_fee_chart = Chart::new(bf_datasets)
         .block(
             Block::default()
-                .title(format!("base fee{gran_suffix}"))
+                .title(format!("base fee{gran_suffix}{scale_suffix}"))
                 .borders(Borders::ALL),
         )
         .x_axis(
@@ -362,8 +373,18 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     paint_time_of_day_bg(frame, bf_inner, x_min, x_max);
 
     if let Some(ch) = &crosshair {
+        let scaled_fee_y = scaled_crosshair_y.unwrap_or(0.0);
         draw_crosshair_highlight(
-            frame, ch, layout[0], layout[1], x_min, x_max, by_min, by_max, y_label_w,
+            frame,
+            ch.data_x,
+            scaled_fee_y,
+            layout[0],
+            layout[1],
+            x_min,
+            x_max,
+            by_min,
+            by_max,
+            y_label_w,
         );
     }
 
@@ -1088,6 +1109,7 @@ fn help_lines(mode: AppMode) -> Vec<Line<'static>> {
             entries.push(("g", "cycle granularity"));
             entries.push(("G", "set granularity"));
             entries.push(("h", "switch histogram"));
+            entries.push(("s", "cycle scale mode"));
             entries.push(("l", "toggle logs"));
             entries.push(("r", "toggle rpc info"));
             entries.push(("mouse", "crosshair"));
@@ -1357,7 +1379,8 @@ fn highlight_cell(buf: &mut ratatui::buffer::Buffer, col: u16, row: u16, bg: Col
 #[allow(clippy::too_many_arguments)]
 fn draw_crosshair_highlight(
     frame: &mut Frame,
-    ch: &Crosshair,
+    data_x: f64,
+    scaled_fee_y: f64,
     tx_rect: Rect,
     bf_rect: Rect,
     x_min: f64,
@@ -1369,9 +1392,9 @@ fn draw_crosshair_highlight(
     let tx_inner = chart_inner(tx_rect, y_label_w);
     let bf_inner = chart_inner(bf_rect, y_label_w);
 
-    let tx_col = data_to_col(ch.data_x, x_min, x_max, tx_inner);
-    let bf_col = data_to_col(ch.data_x, x_min, x_max, bf_inner);
-    let bf_row = data_to_row(ch.base_fee_y, by_min, by_max, bf_inner);
+    let tx_col = data_to_col(data_x, x_min, x_max, tx_inner);
+    let bf_col = data_to_col(data_x, x_min, x_max, bf_inner);
+    let bf_row = data_to_row(scaled_fee_y, by_min, by_max, bf_inner);
 
     let buf = frame.buffer_mut();
 
@@ -1557,18 +1580,18 @@ fn y_labels_int(y_min: f64, y_max: f64) -> Vec<String> {
     ]
 }
 
-fn y_labels_gwei(y_min: f64, y_max: f64) -> Vec<String> {
-    let unit = pick_fee_unit(y_max);
-    let mid = (y_min + y_max) / 2.0;
-    let q1 = (y_min + mid) / 2.0;
-    let q3 = (mid + y_max) / 2.0;
-    vec![
-        format_fee_with_unit(y_min, unit),
-        format_fee_with_unit(q1, unit),
-        format_fee_with_unit(mid, unit),
-        format_fee_with_unit(q3, unit),
-        format_fee_with_unit(y_max, unit),
-    ]
+fn scaled_y_labels_gwei(scaled_min: f64, scaled_max: f64, scale: ScaleMode) -> Vec<String> {
+    let mid = (scaled_min + scaled_max) / 2.0;
+    let q1 = (scaled_min + mid) / 2.0;
+    let q3 = (mid + scaled_max) / 2.0;
+    let positions = [scaled_min, q1, mid, q3, scaled_max];
+    let originals: Vec<f64> = positions.iter().map(|v| scale.invert(*v)).collect();
+    let max_original = originals.iter().fold(0.0_f64, |a, b| a.max(*b));
+    let unit = pick_fee_unit(max_original);
+    originals
+        .iter()
+        .map(|v| format_fee_with_unit(*v, unit))
+        .collect()
 }
 
 fn filter_color(index: usize) -> Color {
