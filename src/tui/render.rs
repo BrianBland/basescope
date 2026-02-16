@@ -10,7 +10,7 @@ use ratatui::widgets::{
 };
 use tracing::Level;
 
-use crate::domain::{approx_head_block, BASE_BLOCK_TIME_SECS, BASE_GENESIS_TIMESTAMP};
+use crate::domain::{approx_head_block, FilterId, BASE_BLOCK_TIME_SECS, BASE_GENESIS_TIMESTAMP};
 use crate::tui::{
     App, AppMode, BottomPanel, ChunkState, Granularity, HistogramMode, RangeField, ScaleTransform,
 };
@@ -213,8 +213,13 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     app.tx_chart_rect.set(layout[0]);
     app.bf_chart_rect.set(layout[1]);
 
+    let (full_x_min, full_x_max) = series_x_bounds(&snapshot.base_fee_series);
+    app.full_x_range.set((full_x_min, full_x_max));
+    let x_min = app.view_start.unwrap_or(full_x_min);
+    let x_max = app.view_end.unwrap_or(full_x_max);
+    let visible_range = (x_max - x_min).max(1.0) as usize;
+    app.auto_granularity.set(super::auto_granularity(visible_range));
     let g = app.effective_granularity();
-    let (x_min, x_max) = series_x_bounds(&snapshot.base_fee_series);
     let x_labels = x_axis_labels(x_min, x_max, layout[0].width.saturating_sub(8) as usize);
 
     let grouped_filter_series: FilterSeries = snapshot
@@ -222,14 +227,15 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         .iter()
         .filter(|f| f.enabled)
         .filter_map(|f| {
-            snapshot
-                .filter_series
-                .get(&f.id)
-                .map(|series| (f.label.clone(), f.color_index, group_series_sum(series, g)))
+            snapshot.filter_series.get(&f.id).map(|series| {
+                let visible = filter_visible(series, x_min, x_max);
+                (f.label.clone(), f.color_index, group_series_sum(&visible, g))
+            })
         })
         .collect();
 
-    let grouped_base_fee = group_series_avg(&snapshot.base_fee_series, g);
+    let visible_base_fee = filter_visible(&snapshot.base_fee_series, x_min, x_max);
+    let grouped_base_fee = group_series_avg(&visible_base_fee, g);
     let scale = app.scale_mode.build_transform(&grouped_base_fee);
     let scaled_base_fee: Vec<(f64, f64)> = grouped_base_fee
         .iter()
@@ -246,6 +252,7 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let original_by_max = scale.invert(by_max);
     let original_by_min = scale.invert(by_min);
     let y_label_w = by_labels_width(original_by_min, original_by_max);
+    app.last_y_label_w.set(y_label_w);
     let graph_w_chars = chart_inner(layout[0], y_label_w).width as f64;
     let x_range = x_max - x_min;
     let cell_w = if graph_w_chars > 0.0 && x_range > 0.0 {
@@ -392,7 +399,7 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(layout[2]);
-    render_histogram(app, snapshot, frame, bottom[0]);
+    render_histogram(app, snapshot, frame, bottom[0], x_min, x_max);
     render_sidebar(app, snapshot, frame, bottom[1]);
 }
 
@@ -507,16 +514,18 @@ fn render_histogram(
     snapshot: &crate::domain::AnalysisSnapshot,
     frame: &mut Frame,
     area: Rect,
+    x_min: f64,
+    x_max: f64,
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let gap = 1usize;
 
     match app.hist_mode {
         HistogramMode::AllBlocks => {
-            render_histogram_all_blocks(app, snapshot, frame, area, inner_width, gap);
+            render_histogram_all_blocks(app, snapshot, frame, area, inner_width, gap, x_min, x_max);
         }
         HistogramMode::FilterMatches => {
-            render_histogram_filter_matches(snapshot, frame, area, inner_width, gap);
+            render_histogram_filter_matches(snapshot, frame, area, inner_width, gap, x_min, x_max);
         }
     }
 
@@ -539,22 +548,38 @@ fn render_histogram_filter_matches(
     area: Rect,
     inner_width: usize,
     gap: usize,
+    x_min: f64,
+    x_max: f64,
 ) {
-    let raw_hists: HistSlices<'_> = if snapshot.show_aggregate {
-        vec![("", 0, snapshot.aggregate_histogram.as_slice())]
+    let base_fee_lookup: HashMap<u64, f64> = snapshot
+        .base_fee_series
+        .iter()
+        .map(|(block, fee)| (*block as u64, *fee))
+        .collect();
+
+    let owned_hists: FilterSeries = if snapshot.show_aggregate {
+        let visible = filter_visible(&snapshot.aggregate_series, x_min, x_max);
+        let hist = build_fee_histogram(&visible, &base_fee_lookup);
+        vec![("".to_string(), 0, hist)]
     } else {
         snapshot
             .filters
             .iter()
             .filter(|f| f.enabled)
             .filter_map(|f| {
-                snapshot
-                    .filter_histograms
-                    .get(&f.id)
-                    .map(|h| (f.label.as_str(), f.color_index, h.as_slice()))
+                snapshot.filter_series.get(&f.id).map(|series| {
+                    let visible = filter_visible(series, x_min, x_max);
+                    let hist = build_fee_histogram(&visible, &base_fee_lookup);
+                    (f.label.clone(), f.color_index, hist)
+                })
             })
             .collect()
     };
+
+    let raw_hists: HistSlices<'_> = owned_hists
+        .iter()
+        .map(|(label, color_idx, hist)| (label.as_str(), *color_idx, hist.as_slice()))
+        .collect();
 
     let bar_w: u16 = 3;
     let max_buckets = if (bar_w as usize + gap) > 0 {
@@ -644,6 +669,7 @@ fn bucket_overlaps(bucket_lo: f64, bucket_hi: f64, raw: &[(f64, f64)]) -> bool {
         .any(|(b, count)| *count > 0.0 && *b >= bucket_lo - 1e-9 && *b <= bucket_hi + 1e-9)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_histogram_all_blocks(
     app: &App,
     snapshot: &crate::domain::AnalysisSnapshot,
@@ -651,6 +677,8 @@ fn render_histogram_all_blocks(
     area: Rect,
     inner_width: usize,
     gap: usize,
+    x_min: f64,
+    x_max: f64,
 ) {
     let g = app.effective_granularity();
     let sample_label_len = 6;
@@ -662,11 +690,18 @@ fn render_histogram_all_blocks(
     }
     .max(2);
 
-    let hist_data: Vec<(f64, f64)> = if g > 1 {
-        let grouped = group_series_avg(&snapshot.base_fee_series, g);
+    let visible_base_fee = filter_visible(&snapshot.base_fee_series, x_min, x_max);
+    let grouped;
+    let fee_source: &[(f64, f64)] = if g > 1 {
+        grouped = group_series_avg(&visible_base_fee, g);
+        &grouped
+    } else {
+        &visible_base_fee
+    };
+    let hist_data: Vec<(f64, f64)> = {
         let mut hist: Vec<(f64, f64)> = Vec::new();
-        for &(_block, avg_fee) in &grouped {
-            let bucket = (avg_fee * 1000.0).floor() / 1000.0;
+        for &(_block, fee) in fee_source {
+            let bucket = (fee * 1000.0).floor() / 1000.0;
             if let Some((_, count)) = hist.iter_mut().find(|(b, _)| (*b - bucket).abs() < 1e-9) {
                 *count += 1.0;
             } else {
@@ -675,8 +710,6 @@ fn render_histogram_all_blocks(
         }
         hist.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         hist
-    } else {
-        snapshot.all_blocks_histogram.clone()
     };
 
     let merged = rebucket(&hist_data, max_buckets);
@@ -685,6 +718,20 @@ fn render_histogram_all_blocks(
 
     let enabled_filters: Vec<_> = snapshot.filters.iter().filter(|f| f.enabled).collect();
 
+    let base_fee_lookup: HashMap<u64, f64> = visible_base_fee
+        .iter()
+        .map(|(block, fee)| (*block as u64, *fee))
+        .collect();
+    let visible_filter_hists: HashMap<FilterId, Vec<(f64, f64)>> = enabled_filters
+        .iter()
+        .filter_map(|f| {
+            snapshot.filter_series.get(&f.id).map(|series| {
+                let visible = filter_visible(series, x_min, x_max);
+                (f.id, build_fee_histogram(&visible, &base_fee_lookup))
+            })
+        })
+        .collect();
+
     let styled_bars: Vec<(String, u64, Style)> = merged
         .iter()
         .map(|(lo, hi, count)| {
@@ -692,8 +739,7 @@ fn render_histogram_all_blocks(
             let matching_colors: Vec<(u8, u8, u8)> = enabled_filters
                 .iter()
                 .filter(|f| {
-                    snapshot
-                        .filter_histograms
+                    visible_filter_hists
                         .get(&f.id)
                         .map(|h| bucket_overlaps(*lo, *hi, h))
                         .unwrap_or(false)
@@ -980,6 +1026,37 @@ fn series_y_bounds(datasets: &[&[(f64, f64)]]) -> (f64, f64) {
     }
 }
 
+fn filter_visible(series: &[(f64, f64)], x_min: f64, x_max: f64) -> Vec<(f64, f64)> {
+    series
+        .iter()
+        .copied()
+        .filter(|(x, _)| *x >= x_min && *x <= x_max)
+        .collect()
+}
+
+/// Build a base-fee histogram from a block series by looking up each block's fee.
+fn build_fee_histogram(
+    block_series: &[(f64, f64)],
+    base_fee_lookup: &HashMap<u64, f64>,
+) -> Vec<(f64, f64)> {
+    let mut hist: Vec<(f64, f64)> = Vec::new();
+    for &(block, tx_count) in block_series {
+        if tx_count <= 0.0 {
+            continue;
+        }
+        if let Some(&fee) = base_fee_lookup.get(&(block as u64)) {
+            let bucket = (fee * 1000.0).floor() / 1000.0;
+            if let Some((_, count)) = hist.iter_mut().find(|(b, _)| (*b - bucket).abs() < 1e-9) {
+                *count += tx_count;
+            } else {
+                hist.push((bucket, tx_count));
+            }
+        }
+    }
+    hist.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    hist
+}
+
 fn render_log_panel(app: &App, frame: &mut Frame, area: Rect) {
     let inner_height = area.height.saturating_sub(2) as usize;
     let lines = app.log_buffer.recent(inner_height);
@@ -1113,6 +1190,9 @@ fn help_lines(mode: AppMode) -> Vec<Line<'static>> {
             entries.push(("l", "toggle logs"));
             entries.push(("r", "toggle rpc info"));
             entries.push(("mouse", "crosshair"));
+            entries.push(("z/Z", "zoom in/out (+ scroll)"));
+            entries.push(("←/→", "pan"));
+            entries.push(("Home", "reset zoom"));
         }
     }
 
@@ -1272,7 +1352,7 @@ fn compute_crosshair(
     Some(Crosshair { data_x, base_fee_y })
 }
 
-fn chart_inner(chart_rect: Rect, y_label_w: u16) -> Rect {
+pub(crate) fn chart_inner(chart_rect: Rect, y_label_w: u16) -> Rect {
     // Must match ratatui's Chart::layout() graph_area calculation:
     //   block border:     1 row top, 1 row bottom, 1 col left, 1 col right
     //   y-axis labels:    y_label_w columns

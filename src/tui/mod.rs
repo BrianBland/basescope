@@ -173,7 +173,7 @@ pub struct App {
     pub chunk_ranges: Vec<(u64, u64)>,
     pub bottom_panel: BottomPanel,
     pub granularity: Granularity,
-    pub auto_granularity: usize,
+    pub auto_granularity: Cell<usize>,
     pub granularity_input: Option<String>,
     pub mouse_col: u16,
     pub mouse_row: u16,
@@ -182,6 +182,10 @@ pub struct App {
     pub show_help: bool,
     pub tx_chart_rect: Cell<Rect>,
     pub bf_chart_rect: Cell<Rect>,
+    pub view_start: Option<f64>,
+    pub view_end: Option<f64>,
+    pub full_x_range: Cell<(f64, f64)>,
+    pub last_y_label_w: Cell<u16>,
 }
 
 impl App {
@@ -214,7 +218,7 @@ impl App {
             chunk_ranges: Vec::new(),
             bottom_panel: BottomPanel::Logs,
             granularity: Granularity::Auto,
-            auto_granularity: 1,
+            auto_granularity: Cell::new(1),
             granularity_input: None,
             mouse_col: 0,
             mouse_row: 0,
@@ -223,6 +227,10 @@ impl App {
             show_help: false,
             tx_chart_rect: Cell::new(Rect::default()),
             bf_chart_rect: Cell::new(Rect::default()),
+            view_start: None,
+            view_end: None,
+            full_x_range: Cell::new((0.0, 0.0)),
+            last_y_label_w: Cell::new(8),
         };
 
         if let Some(spec) = cli_spec {
@@ -369,6 +377,27 @@ impl App {
                     }
                     return Ok(());
                 }
+                KeyCode::Char('z') => {
+                    self.zoom(true);
+                    return Ok(());
+                }
+                KeyCode::Char('Z') => {
+                    self.zoom(false);
+                    return Ok(());
+                }
+                KeyCode::Left => {
+                    self.pan(-0.1);
+                    return Ok(());
+                }
+                KeyCode::Right => {
+                    self.pan(0.1);
+                    return Ok(());
+                }
+                KeyCode::Home => {
+                    self.view_start = None;
+                    self.view_end = None;
+                    return Ok(());
+                }
                 KeyCode::Char(c) if c.is_ascii_digit() => {
                     let index = c.to_digit(10).unwrap_or(0) as usize;
                     if index > 0 {
@@ -394,9 +423,26 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) {
-        if let MouseEventKind::Moved = mouse.kind {
-            self.mouse_col = mouse.column;
-            self.mouse_row = mouse.row;
+        match mouse.kind {
+            MouseEventKind::Moved => {
+                self.mouse_col = mouse.column;
+                self.mouse_row = mouse.row;
+            }
+            MouseEventKind::ScrollUp => {
+                self.mouse_col = mouse.column;
+                self.mouse_row = mouse.row;
+                if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
+                    self.zoom(true);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                self.mouse_col = mouse.column;
+                self.mouse_row = mouse.row;
+                if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
+                    self.zoom(false);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -516,7 +562,7 @@ impl App {
 
     fn start_pipeline(&mut self, spec: ScanSpec) {
         let range = spec.end_block.saturating_sub(spec.start_block).max(1) as usize;
-        self.auto_granularity = auto_granularity(range);
+        self.auto_granularity.set(auto_granularity(range));
 
         self.analysis = Some(Analyzer::new(&spec.filters));
         self.snapshot = self.analysis.as_ref().map(|a| a.snapshot());
@@ -580,7 +626,7 @@ impl App {
 
     pub fn effective_granularity(&self) -> usize {
         match self.granularity {
-            Granularity::Auto => self.auto_granularity,
+            Granularity::Auto => self.auto_granularity.get(),
             Granularity::Fixed(v) => v,
         }
     }
@@ -600,9 +646,112 @@ impl App {
             filter.color_index = idx;
         }
     }
+
+    fn mouse_to_data_x(&self, x_min: f64, x_max: f64) -> Option<f64> {
+        let col = self.mouse_col;
+        let row = self.mouse_row;
+        let tx_rect = self.tx_chart_rect.get();
+        let bf_rect = self.bf_chart_rect.get();
+
+        let in_tx = col >= tx_rect.x
+            && col < tx_rect.x + tx_rect.width
+            && row >= tx_rect.y
+            && row < tx_rect.y + tx_rect.height;
+        let in_bf = col >= bf_rect.x
+            && col < bf_rect.x + bf_rect.width
+            && row >= bf_rect.y
+            && row < bf_rect.y + bf_rect.height;
+
+        if !in_tx && !in_bf {
+            return None;
+        }
+
+        let chart_rect = if in_tx { tx_rect } else { bf_rect };
+        let y_label_w = self.last_y_label_w.get();
+        let inner = render::chart_inner(chart_rect, y_label_w);
+
+        if col < inner.x || col >= inner.x + inner.width || inner.width == 0 {
+            return None;
+        }
+
+        let graph_w = inner.width.saturating_sub(1).max(1) as f64;
+        let frac = ((col - inner.x) as f64) / graph_w;
+        let frac = frac.clamp(0.0, 1.0);
+        Some(x_min + frac * (x_max - x_min))
+    }
+
+    fn zoom(&mut self, zoom_in: bool) {
+        let (full_min, full_max) = self.full_x_range.get();
+        if full_max <= full_min {
+            return;
+        }
+
+        let cur_min = self.view_start.unwrap_or(full_min);
+        let cur_max = self.view_end.unwrap_or(full_max);
+        let cur_range = cur_max - cur_min;
+
+        let center = self
+            .mouse_to_data_x(cur_min, cur_max)
+            .unwrap_or((cur_min + cur_max) / 2.0);
+
+        let factor = if zoom_in { 0.8 } else { 1.25 };
+        let new_range = (cur_range * factor).max(20.0);
+
+        if new_range >= (full_max - full_min) {
+            self.view_start = None;
+            self.view_end = None;
+            return;
+        }
+
+        let left_frac = if cur_range > 0.0 {
+            (center - cur_min) / cur_range
+        } else {
+            0.5
+        };
+        let new_min = center - left_frac * new_range;
+        let new_max = new_min + new_range;
+
+        let (clamped_min, clamped_max) = if new_min < full_min {
+            (full_min, (full_min + new_range).min(full_max))
+        } else if new_max > full_max {
+            ((full_max - new_range).max(full_min), full_max)
+        } else {
+            (new_min, new_max)
+        };
+
+        self.view_start = Some(clamped_min);
+        self.view_end = Some(clamped_max);
+    }
+
+    fn pan(&mut self, fraction: f64) {
+        let (full_min, full_max) = self.full_x_range.get();
+        if full_max <= full_min || (self.view_start.is_none() && self.view_end.is_none()) {
+            return;
+        }
+
+        let cur_min = self.view_start.unwrap_or(full_min);
+        let cur_max = self.view_end.unwrap_or(full_max);
+        let cur_range = cur_max - cur_min;
+        let delta = cur_range * fraction;
+        let mut new_min = cur_min + delta;
+        let mut new_max = cur_max + delta;
+
+        if new_min < full_min {
+            new_max += full_min - new_min;
+            new_min = full_min;
+        }
+        if new_max > full_max {
+            new_min -= new_max - full_max;
+            new_max = full_max;
+            new_min = new_min.max(full_min);
+        }
+
+        self.view_start = Some(new_min);
+        self.view_end = Some(new_max);
+    }
 }
 
-fn auto_granularity(block_range: usize) -> usize {
+pub(crate) fn auto_granularity(block_range: usize) -> usize {
     const TARGET_POINTS: usize = 2500;
     let raw = block_range / TARGET_POINTS;
     match raw {
