@@ -10,6 +10,7 @@ A terminal UI for analyzing transaction activity on Base. Fetches blocks over JS
 - **Live-updating charts** — tx count per block, base fee over time, and base fee histograms update as blocks stream in
 - **Color-coded overlays** — each filter gets a distinct color across all charts; overlapping regions blend automatically
 - **Aggregate mode** — toggle to union all filter matches into a single series
+- **Zoom & pan** — scroll wheel or z/Z to zoom into block ranges; horizontal scroll or arrow keys to pan; Home to reset
 - **Mouse crosshair** — hover over charts to inspect individual block values
 - **Chunk-level caching** — fetched block data is cached to disk as bincode, so re-scanning the same range is instant
 - **Multi-RPC support** — round-robin across multiple endpoints with automatic scoring/failover
@@ -77,13 +78,16 @@ All CLI flags can be set via environment variables or a `.env` file:
 | `a` | Toggle aggregate mode |
 | `g` | Cycle granularity (1 → 10 → 100 → 1000 → auto → 1) |
 | `G` | Set custom granularity (number or "auto") |
-| `h` | Switch histogram between filter matches and all blocks |
+| `h` | Cycle histogram mode (filter matches → all blocks → stacked) |
 | `s` | Cycle base fee Y-axis scale (linear → log → sqrt) |
 | `l` | Toggle log panel |
 | `r` | Toggle RPC info panel |
+| `z` / `Z` | Zoom in / out (centered on cursor) |
+| `←` / `→` | Pan left / right when zoomed |
+| `Home` | Reset zoom to full range |
 | `q` | Quit |
 
-Mouse movement over the top two charts shows a crosshair with block number and base fee.
+Mouse movement over the top two charts shows a crosshair with block number and base fee. Vertical scroll zooms; horizontal scroll pans.
 
 ## Architecture
 

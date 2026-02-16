@@ -444,6 +444,16 @@ impl App {
                     self.zoom(false);
                 }
             }
+            MouseEventKind::ScrollLeft => {
+                if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
+                    self.pan(-0.1);
+                }
+            }
+            MouseEventKind::ScrollRight => {
+                if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
+                    self.pan(0.1);
+                }
+            }
             _ => {}
         }
     }
