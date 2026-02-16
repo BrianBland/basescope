@@ -140,6 +140,7 @@ impl ScaleTransform {
 pub enum HistogramMode {
     FilterMatches,
     AllBlocks,
+    Stacked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,7 +363,8 @@ impl App {
                 KeyCode::Char('h') => {
                     self.hist_mode = match self.hist_mode {
                         HistogramMode::FilterMatches => HistogramMode::AllBlocks,
-                        HistogramMode::AllBlocks => HistogramMode::FilterMatches,
+                        HistogramMode::AllBlocks => HistogramMode::Stacked,
+                        HistogramMode::Stacked => HistogramMode::FilterMatches,
                     };
                     return Ok(());
                 }
