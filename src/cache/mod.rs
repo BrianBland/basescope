@@ -6,6 +6,8 @@ use crate::error::BasescopeError;
 
 const ZSTD_LEVEL: i32 = 3;
 const V1_MAGIC: [u8; 4] = *b"BSv1";
+/// Maximum decompressed size for cached chunks (64 MiB).
+const MAX_DECOMPRESSED_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Cache {
@@ -31,7 +33,7 @@ impl Cache {
     pub fn load_chunk(&self, start_block: u64, end_block: u64) -> Result<ChunkData, BasescopeError> {
         let path = self.chunk_path(start_block, end_block);
         let bytes = fs::read(path)?;
-        let decompressed = zstd::bulk::decompress(&bytes, 64 * 1024 * 1024)
+        let decompressed = zstd::bulk::decompress(&bytes, MAX_DECOMPRESSED_SIZE)
             .map_err(|e| BasescopeError::Serialization(format!("zstd decompress: {e}")))?;
         if decompressed.len() < V1_MAGIC.len() || decompressed[..4] != V1_MAGIC {
             return Err(BasescopeError::Serialization(
