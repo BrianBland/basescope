@@ -5,9 +5,10 @@
 ```bash
 cargo build          # must exit 0
 cargo clippy         # must produce zero warnings
+cargo test           # must pass all tests
 ```
 
-Always run both before considering any change complete.
+Always run all three before considering any change complete.
 
 ## Key Rules
 

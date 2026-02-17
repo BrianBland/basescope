@@ -89,6 +89,14 @@ All CLI flags can be set via environment variables or a `.env` file:
 
 Mouse movement over the top two charts shows a crosshair with block number and base fee. Vertical scroll zooms; horizontal scroll pans.
 
+## Testing
+
+```
+cargo test
+```
+
+Unit tests cover domain logic (timestamp/block conversion, filter parsing, chunk ranges), rendering helpers (fee formatting, series grouping, axis labels), and TUI utilities (auto-granularity, scale mode roundtrips).
+
 ## Architecture
 
 ```
