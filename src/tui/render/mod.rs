@@ -289,3 +289,162 @@ pub(crate) fn chart_inner(chart_rect: Rect, y_label_w: u16) -> Rect {
     let h = bottom.saturating_sub(top).saturating_add(1);
     Rect::new(left, top, w, h)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_trailing_zeros_removes_zeros() {
+        assert_eq!(strip_trailing_zeros("1.200"), "1.2");
+        assert_eq!(strip_trailing_zeros("1.000"), "1");
+        assert_eq!(strip_trailing_zeros("0.100"), "0.1");
+    }
+
+    #[test]
+    fn strip_trailing_zeros_no_dot() {
+        assert_eq!(strip_trailing_zeros("42"), "42");
+    }
+
+    #[test]
+    fn truncate_to_short_string() {
+        assert_eq!(truncate_to("hi", 5), "hi");
+    }
+
+    #[test]
+    fn truncate_to_exact() {
+        assert_eq!(truncate_to("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_to_ellipsis() {
+        let result = truncate_to("hello world", 5);
+        assert_eq!(result.chars().count(), 5);
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_to_zero() {
+        assert_eq!(truncate_to("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_to_one() {
+        assert_eq!(truncate_to("hello", 1), "h");
+    }
+
+    #[test]
+    fn pick_fee_unit_gwei() {
+        assert!(matches!(pick_fee_unit(5.0), FeeUnit::Gwei));
+    }
+
+    #[test]
+    fn pick_fee_unit_mwei() {
+        assert!(matches!(pick_fee_unit(0.5), FeeUnit::Mwei));
+    }
+
+    #[test]
+    fn format_fee_value_gwei() {
+        let s = format_fee_value(2.5);
+        assert!(s.ends_with('G'));
+    }
+
+    #[test]
+    fn format_fee_value_mwei() {
+        let s = format_fee_value(0.001);
+        assert!(s.ends_with('M'));
+    }
+
+    #[test]
+    fn filter_visible_empty() {
+        let series: Vec<(f64, f64)> = vec![];
+        assert_eq!(filter_visible(&series, 0.0, 10.0).len(), 0);
+    }
+
+    #[test]
+    fn filter_visible_range() {
+        let series = vec![(1.0, 1.0), (5.0, 2.0), (10.0, 3.0), (15.0, 4.0)];
+        let visible = filter_visible(&series, 5.0, 10.0);
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[0].0, 5.0);
+        assert_eq!(visible[1].0, 10.0);
+    }
+
+    #[test]
+    fn series_x_bounds_empty() {
+        assert_eq!(series_x_bounds(&[]), (0.0, 1.0));
+    }
+
+    #[test]
+    fn series_x_bounds_normal() {
+        let series = vec![(1.0, 0.0), (5.0, 0.0), (10.0, 0.0)];
+        assert_eq!(series_x_bounds(&series), (1.0, 10.0));
+    }
+
+    #[test]
+    fn series_y_bounds_empty() {
+        let datasets: Vec<&[(f64, f64)]> = vec![];
+        assert_eq!(series_y_bounds(&datasets), (0.0, 1.0));
+    }
+
+    #[test]
+    fn series_y_bounds_normal() {
+        let data = vec![(1.0, 2.0), (2.0, 8.0)];
+        let (y_min, y_max) = series_y_bounds(&[&data]);
+        assert_eq!(y_min, 0.0);
+        assert!(y_max > 8.0); // padded
+    }
+
+    #[test]
+    fn group_series_sum_identity() {
+        let series = vec![(1.0, 1.0), (2.0, 2.0)];
+        assert_eq!(group_series_sum(&series, 1), series);
+    }
+
+    #[test]
+    fn group_series_sum_groups() {
+        let series = vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)];
+        let result = group_series_sum(&series, 2);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].1, 3.0); // 1+2
+        assert_eq!(result[1].1, 7.0); // 3+4
+    }
+
+    #[test]
+    fn group_series_avg_groups() {
+        let series = vec![(1.0, 2.0), (2.0, 4.0)];
+        let result = group_series_avg(&series, 2);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].1, 3.0); // (2+4)/2
+    }
+
+    #[test]
+    fn nearest_y_empty() {
+        assert_eq!(nearest_y(&[], 5.0), 0.0);
+    }
+
+    #[test]
+    fn nearest_y_exact() {
+        let series = vec![(1.0, 10.0), (5.0, 50.0), (10.0, 100.0)];
+        assert_eq!(nearest_y(&series, 5.0), 50.0);
+    }
+
+    #[test]
+    fn nearest_y_between() {
+        let series = vec![(1.0, 10.0), (10.0, 100.0)];
+        // 6 is closer to 10 than to 1
+        assert_eq!(nearest_y(&series, 6.0), 100.0);
+    }
+
+    #[test]
+    fn format_fee_label_same() {
+        let label = format_fee_label(1.0, 1.0, FeeUnit::Gwei);
+        assert!(!label.contains('-'));
+    }
+
+    #[test]
+    fn format_fee_label_range() {
+        let label = format_fee_label(1.0, 2.0, FeeUnit::Gwei);
+        assert!(label.contains('-'));
+    }
+}

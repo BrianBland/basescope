@@ -319,3 +319,82 @@ impl AnalysisSnapshot {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timestamp_to_block_at_genesis() {
+        assert_eq!(timestamp_to_block(BASE_GENESIS_TIMESTAMP), 0);
+    }
+
+    #[test]
+    fn timestamp_to_block_after_genesis() {
+        assert_eq!(timestamp_to_block(BASE_GENESIS_TIMESTAMP + 10), 5);
+    }
+
+    #[test]
+    fn timestamp_to_block_before_genesis() {
+        assert_eq!(timestamp_to_block(0), 0);
+    }
+
+    #[test]
+    fn parse_filter_to() {
+        let (kind, label) = parse_filter("to:0x0000000000000000000000000000000000000001").unwrap();
+        assert!(matches!(kind, FilterKind::To(_)));
+        assert!(label.is_none());
+    }
+
+    #[test]
+    fn parse_filter_with_label() {
+        let (kind, label) =
+            parse_filter("myfilter = to:0x0000000000000000000000000000000000000001").unwrap();
+        assert!(matches!(kind, FilterKind::To(_)));
+        assert_eq!(label.as_deref(), Some("myfilter"));
+    }
+
+    #[test]
+    fn parse_filter_addr() {
+        let (kind, _) =
+            parse_filter("addr:0x0000000000000000000000000000000000000002").unwrap();
+        assert!(matches!(kind, FilterKind::ToOrFrom(_)));
+    }
+
+    #[test]
+    fn parse_filter_bad_prefix() {
+        assert!(parse_filter("bad:0x0000000000000000000000000000000000000001").is_err());
+    }
+
+    #[test]
+    fn parse_filter_empty_label() {
+        assert!(parse_filter("= to:0x0000000000000000000000000000000000000001").is_err());
+    }
+
+    #[test]
+    fn chunk_ranges_single() {
+        let spec = ScanSpec {
+            start_block: 100,
+            end_block: 150,
+            filters: vec![],
+        };
+        let ranges = spec.chunk_ranges();
+        // chunk_ranges aligns start to CHUNK_SIZE boundaries
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].0, 0);
+        assert_eq!(ranges[0].1, 150);
+    }
+
+    #[test]
+    fn chunk_ranges_multiple() {
+        let spec = ScanSpec {
+            start_block: 0,
+            end_block: CHUNK_SIZE * 3,
+            filters: vec![],
+        };
+        let ranges = spec.chunk_ranges();
+        assert_eq!(ranges.len(), 4);
+        assert_eq!(ranges[0].0, 0);
+        assert_eq!(ranges.last().unwrap().1, CHUNK_SIZE * 3);
+    }
+}

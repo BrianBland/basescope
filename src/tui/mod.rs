@@ -812,3 +812,69 @@ pub(crate) fn auto_granularity(block_range: usize) -> usize {
         _ => 10000,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_granularity_small() {
+        assert_eq!(auto_granularity(100), 1);
+    }
+
+    #[test]
+    fn auto_granularity_medium() {
+        assert_eq!(auto_granularity(25_000), 10);
+    }
+
+    #[test]
+    fn auto_granularity_large() {
+        assert_eq!(auto_granularity(250_000), 100);
+    }
+
+    #[test]
+    fn auto_granularity_very_large() {
+        assert_eq!(auto_granularity(2_500_000), 1000);
+    }
+
+    #[test]
+    fn auto_granularity_huge() {
+        assert_eq!(auto_granularity(25_000_000), 10000);
+    }
+
+    #[test]
+    fn scale_mode_linear_roundtrip() {
+        let transform = ScaleMode::Linear.build_transform(&[(1.0, 5.0), (2.0, 10.0)]);
+        let val = 7.5;
+        let scaled = transform.apply(val);
+        let inverted = transform.invert(scaled);
+        assert!((inverted - val).abs() < 1e-10);
+    }
+
+    #[test]
+    fn scale_mode_log10_roundtrip() {
+        let data = vec![(1.0, 1.0), (2.0, 100.0)];
+        let transform = ScaleMode::Log10.build_transform(&data);
+        let val = 50.0;
+        let scaled = transform.apply(val);
+        let inverted = transform.invert(scaled);
+        assert!((inverted - val).abs() < 1e-6);
+    }
+
+    #[test]
+    fn scale_mode_sqrt_roundtrip() {
+        let data = vec![(1.0, 4.0), (2.0, 16.0)];
+        let transform = ScaleMode::Sqrt.build_transform(&data);
+        let val = 9.0;
+        let scaled = transform.apply(val);
+        let inverted = transform.invert(scaled);
+        assert!((inverted - val).abs() < 1e-10);
+    }
+
+    #[test]
+    fn scale_mode_next_cycles() {
+        assert_eq!(ScaleMode::Linear.next(), ScaleMode::Log10);
+        assert_eq!(ScaleMode::Log10.next(), ScaleMode::Sqrt);
+        assert_eq!(ScaleMode::Sqrt.next(), ScaleMode::Linear);
+    }
+}
