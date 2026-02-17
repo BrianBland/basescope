@@ -10,6 +10,7 @@ use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use crate::analysis::Analyzer;
 use crate::cache::Cache;
 use crate::domain::{ScanSpec, TxFilter, parse_filter};
@@ -187,6 +188,7 @@ pub struct App {
     pub analysis: Option<Analyzer>,
     pub snapshot: Option<Arc<crate::domain::AnalysisSnapshot>>,
     pub pipeline_rx: Option<mpsc::UnboundedReceiver<PipelineEvent>>,
+    cancel_token: CancellationToken,
     pub status_message: String,
     pub rpc_client: RpcClient,
     pub cache: Cache,
@@ -236,6 +238,7 @@ impl App {
             analysis: None,
             snapshot: None,
             pipeline_rx: None,
+            cancel_token: CancellationToken::new(),
             status_message: String::new(),
             rpc_client,
             cache,
@@ -333,6 +336,7 @@ impl App {
         }
 
         if key.code == KeyCode::Char('q') {
+            self.cancel_token.cancel();
             self.should_quit = true;
             return Ok(());
         }
@@ -588,6 +592,10 @@ impl App {
     }
 
     fn start_pipeline(&mut self, spec: ScanSpec) {
+        // Cancel any previous pipeline.
+        self.cancel_token.cancel();
+        self.cancel_token = CancellationToken::new();
+
         let range = spec.end_block.saturating_sub(spec.start_block).max(1) as usize;
         self.view.auto_granularity.set(auto_granularity(range));
 
@@ -601,7 +609,12 @@ impl App {
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         self.pipeline_rx = Some(event_rx);
-        let pipeline = Pipeline::new(self.rpc_client.clone(), self.cache.clone(), self.concurrency);
+        let pipeline = Pipeline::new(
+            self.rpc_client.clone(),
+            self.cache.clone(),
+            self.concurrency,
+            self.cancel_token.clone(),
+        );
 
         tokio::spawn(async move {
             if let Err(err) = pipeline.run(&spec, event_tx.clone()).await {

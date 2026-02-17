@@ -60,12 +60,17 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    pub fn new(rpc_client: RpcClient, cache: Cache, concurrency: usize) -> Self {
+    pub fn new(
+        rpc_client: RpcClient,
+        cache: Cache,
+        concurrency: usize,
+        cancel_token: CancellationToken,
+    ) -> Self {
         Self {
             rpc_client,
             cache,
             concurrency: concurrency.max(1),
-            cancel_token: CancellationToken::new(),
+            cancel_token,
         }
     }
 
