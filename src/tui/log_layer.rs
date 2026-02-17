@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
@@ -28,7 +30,7 @@ impl LogBuffer {
     }
 
     fn push(&self, line: LogLine) {
-        let mut buf = self.inner.lock().unwrap();
+        let mut buf = self.inner.lock();
         if buf.len() >= MAX_LOG_LINES {
             buf.pop_front();
         }
@@ -36,12 +38,12 @@ impl LogBuffer {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().is_empty()
+        self.inner.lock().is_empty()
     }
 
     /// Returns the most recent `n` log lines.
     pub fn recent(&self, n: usize) -> Vec<(Level, String)> {
-        let buf = self.inner.lock().unwrap();
+        let buf = self.inner.lock();
         buf.iter()
             .rev()
             .take(n)
