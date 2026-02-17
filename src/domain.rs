@@ -294,14 +294,10 @@ impl TryFrom<ColumnarChunkData> for ChunkData {
 pub struct AnalysisSnapshot {
     /// (block_number, matching_tx_count) per filter.
     pub filter_series: HashMap<FilterId, Vec<(f64, f64)>>,
-    /// (base_fee_gwei_bucket, matching_tx_count) per filter.
-    pub filter_histograms: HashMap<FilterId, Vec<(f64, f64)>>,
     /// (block_number, base_fee_gwei) for all blocks — the bottom chart.
     pub base_fee_series: Vec<(f64, f64)>,
     /// Union of all enabled filters: (block_number, matching_tx_count).
     pub aggregate_series: Vec<(f64, f64)>,
-    pub aggregate_histogram: Vec<(f64, f64)>,
-    pub all_blocks_histogram: Vec<(f64, f64)>,
     pub blocks_fetched: usize,
     pub filters: Vec<TxFilter>,
     pub show_aggregate: bool,
@@ -310,18 +306,13 @@ pub struct AnalysisSnapshot {
 impl AnalysisSnapshot {
     pub fn new(filters: &[TxFilter]) -> Self {
         let mut filter_series = HashMap::new();
-        let mut filter_histograms = HashMap::new();
         for f in filters {
             filter_series.insert(f.id, Vec::new());
-            filter_histograms.insert(f.id, Vec::new());
         }
         Self {
             filter_series,
-            filter_histograms,
             base_fee_series: Vec::new(),
             aggregate_series: Vec::new(),
-            aggregate_histogram: Vec::new(),
-            all_blocks_histogram: Vec::new(),
             blocks_fetched: 0,
             filters: filters.to_vec(),
             show_aggregate: false,
