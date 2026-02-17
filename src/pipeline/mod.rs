@@ -8,7 +8,7 @@ use tracing::error;
 
 use crate::cache::Cache;
 use crate::domain::{ChunkData, ScanSpec};
-use crate::error::SpamscanError;
+use crate::error::BasescopeError;
 use crate::rpc::RpcClient;
 
 fn find_contiguous_anchor(chunk_ranges: &[(u64, u64)], cache: &Cache) -> i64 {
@@ -73,7 +73,7 @@ impl Pipeline {
         &self,
         spec: &ScanSpec,
         event_tx: mpsc::UnboundedSender<PipelineEvent>,
-    ) -> Result<(), SpamscanError> {
+    ) -> Result<(), BasescopeError> {
         let chunk_ranges = spec.chunk_ranges();
 
         for (start, end) in chunk_ranges.iter().copied() {
@@ -126,7 +126,7 @@ impl Pipeline {
                     .clone()
                     .acquire_owned()
                     .await
-                    .map_err(|_| SpamscanError::Cancelled)?;
+                    .map_err(|_| BasescopeError::Cancelled)?;
                 let rpc = self.rpc_client.clone();
                 let cancel = self.cancel_token.clone();
                 let tx = event_tx.clone();
@@ -136,7 +136,7 @@ impl Pipeline {
                 let handle = tokio::spawn(async move {
                     let _permit = permit;
                     if cancel.is_cancelled() {
-                        return Err(SpamscanError::Cancelled);
+                        return Err(BasescopeError::Cancelled);
                     }
                     let block = rpc.fetch_block_with_retry(block_number, 5).await?;
                     let done = fetched.fetch_add(1, Ordering::Relaxed) + 1;

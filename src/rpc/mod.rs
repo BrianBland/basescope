@@ -10,7 +10,7 @@ use tracing::warn;
 use url::Url;
 
 use crate::domain::{BlockRecord, TxRecord};
-use crate::error::SpamscanError;
+use crate::error::BasescopeError;
 
 const AI_INCREMENT: f64 = 0.05;
 const MD_FACTOR: f64 = 0.5;
@@ -136,15 +136,15 @@ pub struct RpcClient {
 }
 
 impl RpcClient {
-    pub fn new(rpc_urls: &[String]) -> Result<Self, SpamscanError> {
+    pub fn new(rpc_urls: &[String]) -> Result<Self, BasescopeError> {
         if rpc_urls.is_empty() {
-            return Err(SpamscanError::Rpc("no rpc urls provided".into()));
+            return Err(BasescopeError::Rpc("no rpc urls provided".into()));
         }
         let mut providers = Vec::with_capacity(rpc_urls.len());
         for rpc_url in rpc_urls {
             let url: Url = rpc_url
                 .parse()
-                .map_err(|e| SpamscanError::Rpc(format!("invalid rpc url {rpc_url}: {e}")))?;
+                .map_err(|e| BasescopeError::Rpc(format!("invalid rpc url {rpc_url}: {e}")))?;
             let provider = ProviderBuilder::new()
                 .disable_recommended_fillers()
                 .network::<AnyNetwork>()
@@ -176,7 +176,7 @@ impl RpcClient {
         (idx, &self.providers[idx])
     }
 
-    pub async fn fetch_block(&self, block_number: u64) -> Result<BlockRecord, SpamscanError> {
+    pub async fn fetch_block(&self, block_number: u64) -> Result<BlockRecord, BasescopeError> {
         let (idx, provider) = self.pick_provider();
         let result = Self::do_fetch(provider, block_number).await;
         match &result {
@@ -189,15 +189,15 @@ impl RpcClient {
     async fn do_fetch(
         provider: &RootProvider<AnyNetwork>,
         block_number: u64,
-    ) -> Result<BlockRecord, SpamscanError> {
+    ) -> Result<BlockRecord, BasescopeError> {
         let block = provider
             .get_block_by_number(BlockNumberOrTag::Number(block_number))
             .full()
             .await
             .map_err(|e: alloy::transports::RpcError<alloy::transports::TransportErrorKind>| {
-                SpamscanError::Rpc(e.to_string())
+                BasescopeError::Rpc(e.to_string())
             })?
-            .ok_or_else(|| SpamscanError::Rpc(format!("block {block_number} not found")))?;
+            .ok_or_else(|| BasescopeError::Rpc(format!("block {block_number} not found")))?;
 
         let header = block.header();
         let number = header.number;
@@ -207,7 +207,7 @@ impl RpcClient {
         let txs = block
             .transactions()
             .as_transactions()
-            .ok_or_else(|| SpamscanError::Rpc("block missing full transactions".into()))?;
+            .ok_or_else(|| BasescopeError::Rpc("block missing full transactions".into()))?;
 
         let mut transactions = Vec::with_capacity(txs.len());
         for tx in txs {
@@ -237,7 +237,7 @@ impl RpcClient {
         &self,
         block_number: u64,
         max_retries: u32,
-    ) -> Result<BlockRecord, SpamscanError> {
+    ) -> Result<BlockRecord, BasescopeError> {
         let mut last_err = None;
         for attempt in 0..=max_retries {
             match self.fetch_block(block_number).await {

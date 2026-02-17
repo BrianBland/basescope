@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum SpamscanError {
+pub enum BasescopeError {
     #[error("RPC error: {0}")]
     Rpc(String),
 
