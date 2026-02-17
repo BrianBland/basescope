@@ -16,7 +16,7 @@ pub fn timestamp_to_block(timestamp: u64) -> u64 {
 pub fn approx_head_block() -> u64 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs();
     timestamp_to_block(now)
 }
