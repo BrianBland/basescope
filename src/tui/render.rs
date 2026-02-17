@@ -1760,16 +1760,19 @@ fn nearest_y(series: &[(f64, f64)], target_x: f64) -> f64 {
     if series.is_empty() {
         return 0.0;
     }
-    let mut best = &series[0];
-    let mut best_dist = (best.0 - target_x).abs();
-    for pt in series.iter().skip(1) {
-        let dist = (pt.0 - target_x).abs();
-        if dist < best_dist {
-            best = pt;
-            best_dist = dist;
-        }
-    }
-    best.1
+    let idx = series.partition_point(|(x, _)| *x < target_x);
+    let candidates = [idx.saturating_sub(1), idx.min(series.len() - 1)];
+    candidates
+        .iter()
+        .map(|&i| &series[i])
+        .min_by(|a, b| {
+            (a.0 - target_x)
+                .abs()
+                .partial_cmp(&(b.0 - target_x).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|pt| pt.1)
+        .unwrap_or(0.0)
 }
 
 fn quantize(val: f64, min: f64, cell_size: f64) -> i64 {
