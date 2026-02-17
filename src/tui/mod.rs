@@ -335,13 +335,17 @@ impl App {
             return self.handle_granularity_input(key);
         }
 
-        if key.code == KeyCode::Char('q') {
+        let in_text_input = matches!(self.mode, AppMode::RangeInput | AppMode::FilterInput);
+
+        if key.code == KeyCode::Char('q') && !in_text_input
+            || key.code == KeyCode::Esc && in_text_input
+        {
             self.cancel_token.cancel();
             self.should_quit = true;
             return Ok(());
         }
 
-        if key.code == KeyCode::Char('?') {
+        if key.code == KeyCode::Char('?') && !in_text_input {
             self.view.show_help = !self.view.show_help;
             return Ok(());
         }

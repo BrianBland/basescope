@@ -120,19 +120,22 @@ fn help_lines(mode: AppMode) -> Vec<Line<'static>> {
         .add_modifier(Modifier::BOLD);
     let desc_style = Style::default().fg(Color::Gray);
 
-    let mut entries: Vec<(&str, &str)> = vec![("?", "toggle this help"), ("q", "quit")];
+    let mut entries: Vec<(&str, &str)> = vec![("?", "toggle this help")];
 
     match mode {
         AppMode::RangeInput => {
+            entries.push(("Esc", "quit"));
             entries.push(("Tab", "switch field"));
             entries.push(("Enter", "continue"));
         }
         AppMode::FilterInput => {
+            entries.push(("Esc", "quit"));
             entries.push(("Enter", "add filter / start scan"));
             entries.push(("d", "delete selected filter"));
             entries.push(("↑/↓", "select filter"));
         }
         AppMode::Fetching | AppMode::Results => {
+            entries.push(("q", "quit"));
             entries.push(("1-9", "toggle filter"));
             entries.push(("a", "aggregate mode"));
             entries.push(("g", "cycle granularity"));
