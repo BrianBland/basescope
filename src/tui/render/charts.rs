@@ -39,15 +39,15 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         }
     };
 
-    app.tx_chart_rect.set(layout[0]);
-    app.bf_chart_rect.set(layout[1]);
+    app.view.tx_chart_rect.set(layout[0]);
+    app.view.bf_chart_rect.set(layout[1]);
 
     let (full_x_min, full_x_max) = series_x_bounds(&snapshot.base_fee_series);
-    app.full_x_range.set((full_x_min, full_x_max));
-    let x_min = app.view_start.unwrap_or(full_x_min);
-    let x_max = app.view_end.unwrap_or(full_x_max);
+    app.view.full_x_range.set((full_x_min, full_x_max));
+    let x_min = app.view.view_start.unwrap_or(full_x_min);
+    let x_max = app.view.view_end.unwrap_or(full_x_max);
     let visible_range = (x_max - x_min).max(1.0) as usize;
-    app.auto_granularity
+    app.view.auto_granularity
         .set(crate::tui::auto_granularity(visible_range));
     let g = app.effective_granularity();
     let x_labels = x_axis_labels(x_min, x_max, layout[0].width.saturating_sub(8) as usize);
@@ -66,7 +66,7 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
 
     let visible_base_fee = filter_visible(&snapshot.base_fee_series, x_min, x_max);
     let grouped_base_fee = group_series_avg(visible_base_fee, g);
-    let scale = app.scale_mode.build_transform(&grouped_base_fee);
+    let scale = app.view.scale_mode.build_transform(&grouped_base_fee);
     let scaled_base_fee: Vec<(f64, f64)> = grouped_base_fee
         .iter()
         .map(|(x, y)| (*x, scale.apply(*y)))
@@ -82,7 +82,7 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let original_by_max = scale.invert(by_max);
     let original_by_min = scale.invert(by_min);
     let y_label_w = by_labels_width(original_by_min, original_by_max);
-    app.last_y_label_w.set(y_label_w);
+    app.view.last_y_label_w.set(y_label_w);
     let graph_w_chars = chart_inner(layout[0], y_label_w).width as f64;
     let x_range = x_max - x_min;
     let cell_w = if graph_w_chars > 0.0 && x_range > 0.0 {
@@ -183,7 +183,7 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         );
     }
 
-    let scale_suffix = app.scale_mode.label();
+    let scale_suffix = app.view.scale_mode.label();
     let base_fee_chart = Chart::new(bf_datasets)
         .block(
             Block::default()
@@ -252,8 +252,8 @@ fn compute_crosshair(
     y_label_w: u16,
     grouped_base_fee: &[(f64, f64)],
 ) -> Option<Crosshair> {
-    let col = app.mouse_col;
-    let row = app.mouse_row;
+    let col = app.view.mouse_col;
+    let row = app.view.mouse_row;
 
     let in_tx = col >= tx_rect.x
         && col < tx_rect.x + tx_rect.width

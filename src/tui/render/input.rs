@@ -26,9 +26,9 @@ pub(super) fn render_range_input(app: &App, frame: &mut Frame, area: Rect) {
     )));
     frame.render_widget(title, layout[0]);
 
-    let start_block = Paragraph::new(app.start_block_input.as_str())
+    let start_block = Paragraph::new(app.input.start_block_input.as_str())
         .block(Block::default().title("start block").borders(Borders::ALL));
-    let end_block = Paragraph::new(app.end_block_input.as_str())
+    let end_block = Paragraph::new(app.input.end_block_input.as_str())
         .block(Block::default().title("end block").borders(Borders::ALL));
     frame.render_widget(start_block, layout[1]);
     frame.render_widget(end_block, layout[2]);
@@ -39,11 +39,11 @@ pub(super) fn render_range_input(app: &App, frame: &mut Frame, area: Rect) {
     let instructions = Paragraph::new("?: help").block(Block::default().borders(Borders::TOP));
     frame.render_widget(instructions, layout[4]);
 
-    let cursor_x = match app.range_field {
-        RangeField::Start => layout[1].x + 1 + app.start_block_input.len() as u16,
-        RangeField::End => layout[2].x + 1 + app.end_block_input.len() as u16,
+    let cursor_x = match app.input.range_field {
+        RangeField::Start => layout[1].x + 1 + app.input.start_block_input.len() as u16,
+        RangeField::End => layout[2].x + 1 + app.input.end_block_input.len() as u16,
     };
-    let cursor_y = match app.range_field {
+    let cursor_y = match app.input.range_field {
         RangeField::Start => layout[1].y + 1,
         RangeField::End => layout[2].y + 1,
     };
@@ -86,7 +86,7 @@ pub(super) fn render_filter_input(app: &App, frame: &mut Frame, area: Rect) {
         .enumerate()
         .map(|(idx, filter)| {
             let line = Line::from(format!("{}. {}", idx + 1, filter.label));
-            let style = if idx == app.selected_filter {
+            let style = if idx == app.input.selected_filter {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else {
                 Style::default()
@@ -101,11 +101,11 @@ pub(super) fn render_filter_input(app: &App, frame: &mut Frame, area: Rect) {
     );
     frame.render_widget(list, layout[1]);
 
-    let input = Paragraph::new(app.current_filter_input.as_str())
+    let input = Paragraph::new(app.input.current_filter_input.as_str())
         .block(Block::default().title("filter input").borders(Borders::ALL));
     frame.render_widget(input, layout[2]);
     frame.set_cursor_position((
-        layout[2].x + 1 + app.current_filter_input.len() as u16,
+        layout[2].x + 1 + app.input.current_filter_input.len() as u16,
         layout[2].y + 1,
     ));
 

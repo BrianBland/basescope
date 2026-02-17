@@ -153,18 +153,41 @@ pub enum ChunkState {
     Failed,
 }
 
-pub struct App {
-    pub mode: AppMode,
+pub struct InputState {
     pub range_field: RangeField,
     pub start_block_input: String,
     pub end_block_input: String,
-    pub filters: Vec<TxFilter>,
     pub current_filter_input: String,
+    pub selected_filter: usize,
+    pub granularity_input: Option<String>,
+}
+
+pub struct ViewState {
+    pub mouse_col: u16,
+    pub mouse_row: u16,
+    pub tx_chart_rect: Cell<Rect>,
+    pub bf_chart_rect: Cell<Rect>,
+    pub view_start: Option<f64>,
+    pub view_end: Option<f64>,
+    pub full_x_range: Cell<(f64, f64)>,
+    pub last_y_label_w: Cell<u16>,
+    pub auto_granularity: Cell<usize>,
+    pub bottom_panel: BottomPanel,
+    pub granularity: Granularity,
+    pub hist_mode: HistogramMode,
+    pub scale_mode: ScaleMode,
+    pub show_help: bool,
+}
+
+pub struct App {
+    pub mode: AppMode,
+    pub input: InputState,
+    pub view: ViewState,
+    pub filters: Vec<TxFilter>,
     pub analysis: Option<Analyzer>,
     pub snapshot: Option<Arc<crate::domain::AnalysisSnapshot>>,
     pub pipeline_rx: Option<mpsc::UnboundedReceiver<PipelineEvent>>,
     pub status_message: String,
-    pub selected_filter: usize,
     pub rpc_client: RpcClient,
     pub cache: Cache,
     pub concurrency: usize,
@@ -173,21 +196,6 @@ pub struct App {
     pub chunk_states: Vec<ChunkState>,
     pub chunk_progress: Vec<f32>,
     pub chunk_ranges: Vec<(u64, u64)>,
-    pub bottom_panel: BottomPanel,
-    pub granularity: Granularity,
-    pub auto_granularity: Cell<usize>,
-    pub granularity_input: Option<String>,
-    pub mouse_col: u16,
-    pub mouse_row: u16,
-    pub hist_mode: HistogramMode,
-    pub scale_mode: ScaleMode,
-    pub show_help: bool,
-    pub tx_chart_rect: Cell<Rect>,
-    pub bf_chart_rect: Cell<Rect>,
-    pub view_start: Option<f64>,
-    pub view_end: Option<f64>,
-    pub full_x_range: Cell<(f64, f64)>,
-    pub last_y_label_w: Cell<u16>,
 }
 
 impl App {
@@ -200,16 +208,35 @@ impl App {
     ) -> Self {
         let mut app = Self {
             mode: AppMode::RangeInput,
-            range_field: RangeField::Start,
-            start_block_input: String::new(),
-            end_block_input: String::new(),
+            input: InputState {
+                range_field: RangeField::Start,
+                start_block_input: String::new(),
+                end_block_input: String::new(),
+                current_filter_input: String::new(),
+                selected_filter: 0,
+                granularity_input: None,
+            },
+            view: ViewState {
+                mouse_col: 0,
+                mouse_row: 0,
+                tx_chart_rect: Cell::new(Rect::default()),
+                bf_chart_rect: Cell::new(Rect::default()),
+                view_start: None,
+                view_end: None,
+                full_x_range: Cell::new((0.0, 0.0)),
+                last_y_label_w: Cell::new(8),
+                auto_granularity: Cell::new(1),
+                bottom_panel: BottomPanel::Logs,
+                granularity: Granularity::Auto,
+                hist_mode: HistogramMode::FilterMatches,
+                scale_mode: ScaleMode::Linear,
+                show_help: false,
+            },
             filters: Vec::new(),
-            current_filter_input: String::new(),
             analysis: None,
             snapshot: None,
             pipeline_rx: None,
             status_message: String::new(),
-            selected_filter: 0,
             rpc_client,
             cache,
             concurrency,
@@ -218,26 +245,11 @@ impl App {
             chunk_states: Vec::new(),
             chunk_progress: Vec::new(),
             chunk_ranges: Vec::new(),
-            bottom_panel: BottomPanel::Logs,
-            granularity: Granularity::Auto,
-            auto_granularity: Cell::new(1),
-            granularity_input: None,
-            mouse_col: 0,
-            mouse_row: 0,
-            hist_mode: HistogramMode::FilterMatches,
-            scale_mode: ScaleMode::Linear,
-            show_help: false,
-            tx_chart_rect: Cell::new(Rect::default()),
-            bf_chart_rect: Cell::new(Rect::default()),
-            view_start: None,
-            view_end: None,
-            full_x_range: Cell::new((0.0, 0.0)),
-            last_y_label_w: Cell::new(8),
         };
 
         if let Some(spec) = cli_spec {
-            app.start_block_input = spec.start_block.to_string();
-            app.end_block_input = spec.end_block.to_string();
+            app.input.start_block_input = spec.start_block.to_string();
+            app.input.end_block_input = spec.end_block.to_string();
             app.filters = spec.filters.clone();
             app.start_pipeline(spec);
             app.mode = AppMode::Fetching;
@@ -316,7 +328,7 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
-        if self.granularity_input.is_some() {
+        if self.input.granularity_input.is_some() {
             return self.handle_granularity_input(key);
         }
 
@@ -326,28 +338,28 @@ impl App {
         }
 
         if key.code == KeyCode::Char('?') {
-            self.show_help = !self.show_help;
+            self.view.show_help = !self.view.show_help;
             return Ok(());
         }
 
         if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
             match key.code {
                 KeyCode::Char('l') => {
-                    self.bottom_panel = match self.bottom_panel {
+                    self.view.bottom_panel = match self.view.bottom_panel {
                         BottomPanel::Logs => BottomPanel::Hidden,
                         _ => BottomPanel::Logs,
                     };
                     return Ok(());
                 }
                 KeyCode::Char('r') => {
-                    self.bottom_panel = match self.bottom_panel {
+                    self.view.bottom_panel = match self.view.bottom_panel {
                         BottomPanel::Rpc => BottomPanel::Hidden,
                         _ => BottomPanel::Rpc,
                     };
                     return Ok(());
                 }
                 KeyCode::Char('g') => {
-                    self.granularity = match self.granularity {
+                    self.view.granularity = match self.view.granularity {
                         Granularity::Fixed(1) => Granularity::Fixed(10),
                         Granularity::Fixed(10) => Granularity::Fixed(100),
                         Granularity::Fixed(100) => Granularity::Fixed(1000),
@@ -358,11 +370,11 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char('G') => {
-                    self.granularity_input = Some(String::new());
+                    self.input.granularity_input = Some(String::new());
                     return Ok(());
                 }
                 KeyCode::Char('h') => {
-                    self.hist_mode = match self.hist_mode {
+                    self.view.hist_mode = match self.view.hist_mode {
                         HistogramMode::FilterMatches => HistogramMode::AllBlocks,
                         HistogramMode::AllBlocks => HistogramMode::Stacked,
                         HistogramMode::Stacked => HistogramMode::FilterMatches,
@@ -370,7 +382,7 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char('s') => {
-                    self.scale_mode = self.scale_mode.next();
+                    self.view.scale_mode = self.view.scale_mode.next();
                     return Ok(());
                 }
                 KeyCode::Char('a') => {
@@ -397,8 +409,8 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Home => {
-                    self.view_start = None;
-                    self.view_end = None;
+                    self.view.view_start = None;
+                    self.view.view_end = None;
                     return Ok(());
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() => {
@@ -428,19 +440,19 @@ impl App {
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::Moved => {
-                self.mouse_col = mouse.column;
-                self.mouse_row = mouse.row;
+                self.view.mouse_col = mouse.column;
+                self.view.mouse_row = mouse.row;
             }
             MouseEventKind::ScrollUp => {
-                self.mouse_col = mouse.column;
-                self.mouse_row = mouse.row;
+                self.view.mouse_col = mouse.column;
+                self.view.mouse_row = mouse.row;
                 if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
                     self.zoom(true);
                 }
             }
             MouseEventKind::ScrollDown => {
-                self.mouse_col = mouse.column;
-                self.mouse_row = mouse.row;
+                self.view.mouse_col = mouse.column;
+                self.view.mouse_row = mouse.row;
                 if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
                     self.zoom(false);
                 }
@@ -462,7 +474,7 @@ impl App {
     fn handle_range_input(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Tab => {
-                self.range_field = match self.range_field {
+                self.input.range_field = match self.input.range_field {
                     RangeField::Start => RangeField::End,
                     RangeField::End => RangeField::Start,
                 };
@@ -476,17 +488,17 @@ impl App {
                 self.status_message.clear();
                 self.mode = AppMode::FilterInput;
             }
-            KeyCode::Backspace => match self.range_field {
+            KeyCode::Backspace => match self.input.range_field {
                 RangeField::Start => {
-                    self.start_block_input.pop();
+                    self.input.start_block_input.pop();
                 }
                 RangeField::End => {
-                    self.end_block_input.pop();
+                    self.input.end_block_input.pop();
                 }
             },
-            KeyCode::Char(c) if c.is_ascii_digit() => match self.range_field {
-                RangeField::Start => self.start_block_input.push(c),
-                RangeField::End => self.end_block_input.push(c),
+            KeyCode::Char(c) if c.is_ascii_digit() => match self.input.range_field {
+                RangeField::Start => self.input.start_block_input.push(c),
+                RangeField::End => self.input.end_block_input.push(c),
             },
             _ => {}
         }
@@ -496,7 +508,7 @@ impl App {
     fn handle_filter_input(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Enter => {
-                if self.current_filter_input.trim().is_empty() {
+                if self.input.current_filter_input.trim().is_empty() {
                     if self.filters.is_empty() {
                         self.status_message = "add at least one filter".to_string();
                         return Ok(());
@@ -506,38 +518,38 @@ impl App {
                     self.mode = AppMode::Fetching;
                     self.status_message.clear();
                 } else {
-                    let (kind, label) = parse_filter(self.current_filter_input.trim())
+                    let (kind, label) = parse_filter(self.input.current_filter_input.trim())
                         .map_err(|e| anyhow!(e))?;
                     let filter = TxFilter::new(self.filters.len(), kind, label);
                     self.filters.push(filter);
-                    self.current_filter_input.clear();
+                    self.input.current_filter_input.clear();
                     self.status_message.clear();
                 }
             }
             KeyCode::Backspace => {
-                self.current_filter_input.pop();
+                self.input.current_filter_input.pop();
             }
             KeyCode::Char('d') => {
-                if self.selected_filter < self.filters.len() {
-                    self.filters.remove(self.selected_filter);
+                if self.input.selected_filter < self.filters.len() {
+                    self.filters.remove(self.input.selected_filter);
                     self.reindex_filters();
-                    if self.selected_filter >= self.filters.len() && !self.filters.is_empty() {
-                        self.selected_filter = self.filters.len() - 1;
+                    if self.input.selected_filter >= self.filters.len() && !self.filters.is_empty() {
+                        self.input.selected_filter = self.filters.len() - 1;
                     }
                 }
             }
             KeyCode::Up => {
-                if self.selected_filter > 0 {
-                    self.selected_filter -= 1;
+                if self.input.selected_filter > 0 {
+                    self.input.selected_filter -= 1;
                 }
             }
             KeyCode::Down => {
-                if self.selected_filter + 1 < self.filters.len() {
-                    self.selected_filter += 1;
+                if self.input.selected_filter + 1 < self.filters.len() {
+                    self.input.selected_filter += 1;
                 }
             }
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.current_filter_input.push(c);
+                self.input.current_filter_input.push(c);
             }
             _ => {}
         }
@@ -561,11 +573,13 @@ impl App {
 
     fn parse_range_inputs(&self) -> Result<(u64, u64)> {
         let start = self
+            .input
             .start_block_input
             .trim()
             .parse::<u64>()
             .map_err(|_| anyhow!("invalid start block"))?;
         let end = self
+            .input
             .end_block_input
             .trim()
             .parse::<u64>()
@@ -575,7 +589,7 @@ impl App {
 
     fn start_pipeline(&mut self, spec: ScanSpec) {
         let range = spec.end_block.saturating_sub(spec.start_block).max(1) as usize;
-        self.auto_granularity.set(auto_granularity(range));
+        self.view.auto_granularity.set(auto_granularity(range));
 
         self.analysis = Some(Analyzer::new(&spec.filters));
         self.snapshot = self.analysis.as_mut().map(|a| a.snapshot());
@@ -609,26 +623,26 @@ impl App {
     fn handle_granularity_input(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Enter => {
-                if let Some(ref input) = self.granularity_input {
+                if let Some(ref input) = self.input.granularity_input {
                     let trimmed = input.trim();
                     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
-                        self.granularity = Granularity::Auto;
+                        self.view.granularity = Granularity::Auto;
                     } else if let Ok(v) = trimmed.parse::<usize>() {
-                        self.granularity = Granularity::Fixed(v.max(1));
+                        self.view.granularity = Granularity::Fixed(v.max(1));
                     }
                 }
-                self.granularity_input = None;
+                self.input.granularity_input = None;
             }
             KeyCode::Esc => {
-                self.granularity_input = None;
+                self.input.granularity_input = None;
             }
             KeyCode::Backspace => {
-                if let Some(ref mut input) = self.granularity_input {
+                if let Some(ref mut input) = self.input.granularity_input {
                     input.pop();
                 }
             }
             KeyCode::Char(c) if c.is_ascii_alphanumeric() => {
-                if let Some(ref mut input) = self.granularity_input {
+                if let Some(ref mut input) = self.input.granularity_input {
                     input.push(c);
                 }
             }
@@ -638,15 +652,15 @@ impl App {
     }
 
     pub fn effective_granularity(&self) -> usize {
-        match self.granularity {
-            Granularity::Auto => self.auto_granularity.get(),
+        match self.view.granularity {
+            Granularity::Auto => self.view.auto_granularity.get(),
             Granularity::Fixed(v) => v,
         }
     }
 
     pub fn granularity_label(&self) -> String {
         let g = self.effective_granularity();
-        match self.granularity {
+        match self.view.granularity {
             Granularity::Auto if g > 1 => format!(" (auto {}blk)", g),
             Granularity::Auto => String::new(),
             Granularity::Fixed(v) => format!(" ({}blk)", v),
@@ -661,10 +675,10 @@ impl App {
     }
 
     fn mouse_to_data_x(&self, x_min: f64, x_max: f64) -> Option<f64> {
-        let col = self.mouse_col;
-        let row = self.mouse_row;
-        let tx_rect = self.tx_chart_rect.get();
-        let bf_rect = self.bf_chart_rect.get();
+        let col = self.view.mouse_col;
+        let row = self.view.mouse_row;
+        let tx_rect = self.view.tx_chart_rect.get();
+        let bf_rect = self.view.bf_chart_rect.get();
 
         let in_tx = col >= tx_rect.x
             && col < tx_rect.x + tx_rect.width
@@ -680,7 +694,7 @@ impl App {
         }
 
         let chart_rect = if in_tx { tx_rect } else { bf_rect };
-        let y_label_w = self.last_y_label_w.get();
+        let y_label_w = self.view.last_y_label_w.get();
         let inner = render::chart_inner(chart_rect, y_label_w);
 
         if col < inner.x || col >= inner.x + inner.width || inner.width == 0 {
@@ -694,13 +708,13 @@ impl App {
     }
 
     fn zoom(&mut self, zoom_in: bool) {
-        let (full_min, full_max) = self.full_x_range.get();
+        let (full_min, full_max) = self.view.full_x_range.get();
         if full_max <= full_min {
             return;
         }
 
-        let cur_min = self.view_start.unwrap_or(full_min);
-        let cur_max = self.view_end.unwrap_or(full_max);
+        let cur_min = self.view.view_start.unwrap_or(full_min);
+        let cur_max = self.view.view_end.unwrap_or(full_max);
         let cur_range = cur_max - cur_min;
 
         let center = self
@@ -711,8 +725,8 @@ impl App {
         let new_range = (cur_range * factor).max(20.0);
 
         if new_range >= (full_max - full_min) {
-            self.view_start = None;
-            self.view_end = None;
+            self.view.view_start = None;
+            self.view.view_end = None;
             return;
         }
 
@@ -732,18 +746,18 @@ impl App {
             (new_min, new_max)
         };
 
-        self.view_start = Some(clamped_min);
-        self.view_end = Some(clamped_max);
+        self.view.view_start = Some(clamped_min);
+        self.view.view_end = Some(clamped_max);
     }
 
     fn pan(&mut self, fraction: f64) {
-        let (full_min, full_max) = self.full_x_range.get();
-        if full_max <= full_min || (self.view_start.is_none() && self.view_end.is_none()) {
+        let (full_min, full_max) = self.view.full_x_range.get();
+        if full_max <= full_min || (self.view.view_start.is_none() && self.view.view_end.is_none()) {
             return;
         }
 
-        let cur_min = self.view_start.unwrap_or(full_min);
-        let cur_max = self.view_end.unwrap_or(full_max);
+        let cur_min = self.view.view_start.unwrap_or(full_min);
+        let cur_max = self.view.view_end.unwrap_or(full_max);
         let cur_range = cur_max - cur_min;
         let delta = cur_range * fraction;
         let mut new_min = cur_min + delta;
@@ -759,8 +773,8 @@ impl App {
             new_min = new_min.max(full_min);
         }
 
-        self.view_start = Some(new_min);
-        self.view_end = Some(new_max);
+        self.view.view_start = Some(new_min);
+        self.view.view_end = Some(new_max);
     }
 }
 

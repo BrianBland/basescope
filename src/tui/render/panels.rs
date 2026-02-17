@@ -191,9 +191,9 @@ pub(super) fn render_granularity_input(app: &App, frame: &mut Frame, outer: Rect
 
     frame.render_widget(ratatui::widgets::Clear, area);
 
-    let input_text = app.granularity_input.as_deref().unwrap_or("");
+    let input_text = app.input.granularity_input.as_deref().unwrap_or("");
     let hint = if input_text.is_empty() {
-        match app.granularity {
+        match app.view.granularity {
             Granularity::Auto => "auto".to_string(),
             Granularity::Fixed(v) => v.to_string(),
         }

@@ -27,7 +27,7 @@ pub(super) fn render_histogram(
     let inner_width = area.width.saturating_sub(2) as usize;
     let gap = 1usize;
 
-    match app.hist_mode {
+    match app.view.hist_mode {
         HistogramMode::AllBlocks => {
             render_histogram_all_blocks(app, snapshot, frame, area, inner_width, gap, x_min, x_max);
         }

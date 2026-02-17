@@ -21,7 +21,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     let all_done =
         !app.chunk_states.is_empty() && app.chunk_states.iter().all(sidebar::is_complete);
 
-    let effective_panel = match app.bottom_panel {
+    let effective_panel = match app.view.bottom_panel {
         BottomPanel::Logs if all_done && app.log_buffer.is_empty() => BottomPanel::Hidden,
         other => other,
     };
@@ -48,11 +48,11 @@ pub fn render(app: &App, frame: &mut Frame) {
         }
     }
 
-    if app.show_help {
+    if app.view.show_help {
         panels::render_help_panel(app, frame, outer);
     }
 
-    if app.granularity_input.is_some() {
+    if app.input.granularity_input.is_some() {
         panels::render_granularity_input(app, frame, outer);
     }
 }
