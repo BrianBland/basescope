@@ -99,6 +99,14 @@ async fn main() -> Result<()> {
 
     let mut app = tui::App::new(rpc_client, cache, cli.concurrency, cli_spec, log_buffer);
 
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+        let _ = crossterm::terminal::disable_raw_mode();
+        ratatui::restore();
+        original_hook(info);
+    }));
+
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
     let mut terminal = ratatui::init();
