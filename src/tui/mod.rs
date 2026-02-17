@@ -3,6 +3,7 @@ pub mod log_layer;
 pub mod render;
 
 use std::cell::Cell;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -160,7 +161,7 @@ pub struct App {
     pub filters: Vec<TxFilter>,
     pub current_filter_input: String,
     pub analysis: Option<Analyzer>,
-    pub snapshot: Option<crate::domain::AnalysisSnapshot>,
+    pub snapshot: Option<Arc<crate::domain::AnalysisSnapshot>>,
     pub pipeline_rx: Option<mpsc::UnboundedReceiver<PipelineEvent>>,
     pub status_message: String,
     pub selected_filter: usize,
@@ -577,7 +578,7 @@ impl App {
         self.auto_granularity.set(auto_granularity(range));
 
         self.analysis = Some(Analyzer::new(&spec.filters));
-        self.snapshot = self.analysis.as_ref().map(|a| a.snapshot());
+        self.snapshot = self.analysis.as_mut().map(|a| a.snapshot());
 
         let ranges = spec.chunk_ranges();
         self.chunk_states = vec![ChunkState::Pending; ranges.len()];

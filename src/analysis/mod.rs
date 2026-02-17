@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::domain::{AnalysisSnapshot, ChunkData, FilterId, TxFilter};
 
 pub struct Analyzer {
     snapshot: AnalysisSnapshot,
+    cached: Option<Arc<AnalysisSnapshot>>,
     matches_by_filter: HashMap<FilterId, HashMap<u64, Vec<[u8; 32]>>>,
     base_fee_by_block: HashMap<u64, f64>,
     block_order: Vec<u64>,
@@ -17,6 +19,7 @@ impl Analyzer {
         }
         Self {
             snapshot: AnalysisSnapshot::new(filters),
+            cached: None,
             matches_by_filter,
             base_fee_by_block: HashMap::new(),
             block_order: Vec::new(),
@@ -60,10 +63,16 @@ impl Analyzer {
                 .push((block_number as f64, aggregate_count));
             self.snapshot.blocks_fetched += 1;
         }
+        self.cached = None;
     }
 
-    pub fn snapshot(&self) -> AnalysisSnapshot {
-        self.snapshot.clone()
+    pub fn snapshot(&mut self) -> Arc<AnalysisSnapshot> {
+        if let Some(ref cached) = self.cached {
+            return Arc::clone(cached);
+        }
+        let arc = Arc::new(self.snapshot.clone());
+        self.cached = Some(Arc::clone(&arc));
+        arc
     }
 
     pub fn toggle_filter(&mut self, filter_id: FilterId) {
@@ -71,10 +80,12 @@ impl Analyzer {
             filter.enabled = !filter.enabled;
         }
         self.recompute_aggregate();
+        self.cached = None;
     }
 
     pub fn toggle_aggregate(&mut self) {
         self.snapshot.show_aggregate = !self.snapshot.show_aggregate;
+        self.cached = None;
     }
 
     fn recompute_aggregate(&mut self) {
