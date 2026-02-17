@@ -533,7 +533,7 @@ impl App {
             KeyCode::Backspace => {
                 self.input.current_filter_input.pop();
             }
-            KeyCode::Char('d') => {
+            KeyCode::Char('d') if self.input.current_filter_input.is_empty() => {
                 if self.input.selected_filter < self.filters.len() {
                     self.filters.remove(self.input.selected_filter);
                     self.reindex_filters();
