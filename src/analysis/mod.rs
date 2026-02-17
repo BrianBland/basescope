@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use crate::domain::{AnalysisSnapshot, ChunkData, FilterId, TxFilter};
 
+const WEI_PER_GWEI: f64 = 1e9;
+
 pub struct Analyzer {
     snapshot: AnalysisSnapshot,
     cached: Option<Arc<AnalysisSnapshot>>,
@@ -29,7 +31,7 @@ impl Analyzer {
     pub fn process_chunk(&mut self, chunk: &ChunkData) {
         for block in &chunk.blocks {
             let block_number = block.number;
-            let base_fee_gwei = block.base_fee as f64 / 1e9; // wei -> gwei
+            let base_fee_gwei = block.base_fee as f64 / WEI_PER_GWEI;
             self.base_fee_by_block.insert(block_number, base_fee_gwei);
             self.block_order.push(block_number);
             self.snapshot

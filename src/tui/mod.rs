@@ -409,11 +409,11 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Left => {
-                    self.pan(-0.1);
+                    self.pan(-PAN_FRACTION);
                     return Ok(());
                 }
                 KeyCode::Right => {
-                    self.pan(0.1);
+                    self.pan(PAN_FRACTION);
                     return Ok(());
                 }
                 KeyCode::Home => {
@@ -467,12 +467,12 @@ impl App {
             }
             MouseEventKind::ScrollLeft => {
                 if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
-                    self.pan(-0.1);
+                    self.pan(-PAN_FRACTION);
                 }
             }
             MouseEventKind::ScrollRight => {
                 if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
-                    self.pan(0.1);
+                    self.pan(PAN_FRACTION);
                 }
             }
             _ => {}
@@ -738,8 +738,8 @@ impl App {
             .mouse_to_data_x(cur_min, cur_max)
             .unwrap_or((cur_min + cur_max) / 2.0);
 
-        let factor = if zoom_in { 0.8 } else { 1.25 };
-        let new_range = (cur_range * factor).max(20.0);
+        let factor = if zoom_in { ZOOM_IN_FACTOR } else { ZOOM_OUT_FACTOR };
+        let new_range = (cur_range * factor).max(MIN_ZOOM_RANGE);
 
         if new_range >= (full_max - full_min) {
             self.view.view_start = None;
@@ -794,6 +794,11 @@ impl App {
         self.view.view_end = Some(new_max);
     }
 }
+
+const ZOOM_IN_FACTOR: f64 = 0.8;
+const ZOOM_OUT_FACTOR: f64 = 1.25;
+const MIN_ZOOM_RANGE: f64 = 20.0;
+const PAN_FRACTION: f64 = 0.1;
 
 pub(crate) fn auto_granularity(block_range: usize) -> usize {
     const TARGET_POINTS: usize = 2500;

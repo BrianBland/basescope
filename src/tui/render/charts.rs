@@ -326,11 +326,13 @@ fn local_utc_offset_secs() -> i64 {
     })
 }
 
+const SECONDS_PER_DAY: f64 = 86400.0;
+
 fn block_to_hour_frac(block_number: f64) -> f64 {
     let utc_timestamp = BASE_GENESIS_TIMESTAMP as f64 + block_number * BASE_BLOCK_TIME_SECS as f64;
     let offset = local_utc_offset_secs() as f64;
-    let local_secs = ((utc_timestamp + offset) % 86400.0 + 86400.0) % 86400.0;
-    local_secs / 86400.0
+    let local_secs = ((utc_timestamp + offset) % SECONDS_PER_DAY + SECONDS_PER_DAY) % SECONDS_PER_DAY;
+    local_secs / SECONDS_PER_DAY
 }
 
 fn time_of_day_bg(hour_frac: f64) -> Color {
