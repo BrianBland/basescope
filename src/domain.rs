@@ -160,7 +160,7 @@ impl TxRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChunkData {
     pub start_block: u64,
     pub end_block: u64,

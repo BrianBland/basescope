@@ -41,7 +41,7 @@ fn find_contiguous_anchor(chunk_ranges: &[(u64, u64)], cache: &Cache) -> i64 {
     ((s + e) / 2) as i64
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum PipelineEvent {
     ChunkCached(ChunkData),
     ChunkStarted { start: u64 },
