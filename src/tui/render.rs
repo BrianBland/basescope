@@ -229,13 +229,13 @@ fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         .filter_map(|f| {
             snapshot.filter_series.get(&f.id).map(|series| {
                 let visible = filter_visible(series, x_min, x_max);
-                (f.label.clone(), f.color_index, group_series_sum(&visible, g))
+                (f.label.clone(), f.color_index, group_series_sum(visible, g))
             })
         })
         .collect();
 
     let visible_base_fee = filter_visible(&snapshot.base_fee_series, x_min, x_max);
-    let grouped_base_fee = group_series_avg(&visible_base_fee, g);
+    let grouped_base_fee = group_series_avg(visible_base_fee, g);
     let scale = app.scale_mode.build_transform(&grouped_base_fee);
     let scaled_base_fee: Vec<(f64, f64)> = grouped_base_fee
         .iter()
@@ -562,7 +562,7 @@ fn render_histogram_filter_matches(
 
     let owned_hists: FilterSeries = if snapshot.show_aggregate {
         let visible = filter_visible(&snapshot.aggregate_series, x_min, x_max);
-        let hist = build_fee_histogram(&visible, &base_fee_lookup);
+        let hist = build_fee_histogram(visible, &base_fee_lookup);
         vec![("".to_string(), 0, hist)]
     } else {
         snapshot
@@ -572,7 +572,7 @@ fn render_histogram_filter_matches(
             .filter_map(|f| {
                 snapshot.filter_series.get(&f.id).map(|series| {
                     let visible = filter_visible(series, x_min, x_max);
-                    let hist = build_fee_histogram(&visible, &base_fee_lookup);
+                    let hist = build_fee_histogram(visible, &base_fee_lookup);
                     (f.label.clone(), f.color_index, hist)
                 })
             })
@@ -696,10 +696,10 @@ fn render_histogram_all_blocks(
     let visible_base_fee = filter_visible(&snapshot.base_fee_series, x_min, x_max);
     let grouped;
     let fee_source: &[(f64, f64)] = if g > 1 {
-        grouped = group_series_avg(&visible_base_fee, g);
+        grouped = group_series_avg(visible_base_fee, g);
         &grouped
     } else {
-        &visible_base_fee
+        visible_base_fee
     };
     let hist_data: Vec<(f64, f64)> = {
         let mut hist: Vec<(f64, f64)> = Vec::new();
@@ -730,7 +730,7 @@ fn render_histogram_all_blocks(
         .filter_map(|f| {
             snapshot.filter_series.get(&f.id).map(|series| {
                 let visible = filter_visible(series, x_min, x_max);
-                (f.id, build_fee_histogram(&visible, &base_fee_lookup))
+                (f.id, build_fee_histogram(visible, &base_fee_lookup))
             })
         })
         .collect();
@@ -1275,12 +1275,10 @@ fn series_y_bounds(datasets: &[&[(f64, f64)]]) -> (f64, f64) {
     }
 }
 
-fn filter_visible(series: &[(f64, f64)], x_min: f64, x_max: f64) -> Vec<(f64, f64)> {
-    series
-        .iter()
-        .copied()
-        .filter(|(x, _)| *x >= x_min && *x <= x_max)
-        .collect()
+fn filter_visible(series: &[(f64, f64)], x_min: f64, x_max: f64) -> &[(f64, f64)] {
+    let start = series.partition_point(|(x, _)| *x < x_min);
+    let end = series.partition_point(|(x, _)| *x <= x_max);
+    &series[start..end]
 }
 
 /// Build a base-fee histogram from a block series by looking up each block's fee.
