@@ -1846,6 +1846,7 @@ fn build_base_fee_overlays(
     x_min: f64,
     cell_w: f64,
 ) -> Vec<(Color, Vec<(f64, f64)>)> {
+    // Build cell → sorted filter indices mapping.
     let mut cell_filters: HashMap<i64, Vec<usize>> = HashMap::new();
     for (i, (_label, _color_idx, series)) in grouped_filter_series.iter().enumerate() {
         for &(x, y) in series {
@@ -1858,20 +1859,27 @@ fn build_base_fee_overlays(
             }
         }
     }
+    // Pre-sort and dedup each cell's indices once.
+    for indices in cell_filters.values_mut() {
+        indices.sort();
+        indices.dedup();
+    }
 
+    // Pre-compute color for each cell.
+    let cell_colors: HashMap<i64, Color> = cell_filters
+        .iter()
+        .map(|(cx, indices)| (*cx, cell_color(indices, grouped_filter_series)))
+        .collect();
+
+    // Assign each data point its cell's pre-computed color.
     let mut color_buckets: HashMap<Color, Vec<(f64, f64)>> = HashMap::new();
-    for (i, (_label, _color_idx, series)) in grouped_filter_series.iter().enumerate() {
+    for (_label, _color_idx, series) in grouped_filter_series {
         for &(x, y) in series {
             if y > 0.0 {
                 let cx = quantize(x, x_min, cell_w);
-                let mut indices: Vec<usize> = cell_filters.get(&cx).cloned().unwrap_or_default();
-                indices.sort();
-                indices.dedup();
-                if !indices.contains(&i) {
-                    continue;
-                }
-                let color = cell_color(&indices, grouped_filter_series);
-                if let Some(&base_fee) = base_fee_by_x.get(&(x as u64)) {
+                if let Some(&color) = cell_colors.get(&cx)
+                    && let Some(&base_fee) = base_fee_by_x.get(&(x as u64))
+                {
                     color_buckets.entry(color).or_default().push((x, base_fee));
                 }
             }
