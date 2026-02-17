@@ -227,8 +227,36 @@ impl From<&ChunkData> for ColumnarChunkData {
     }
 }
 
-impl From<ColumnarChunkData> for ChunkData {
-    fn from(col: ColumnarChunkData) -> Self {
+impl TryFrom<ColumnarChunkData> for ChunkData {
+    type Error = String;
+
+    fn try_from(col: ColumnarChunkData) -> Result<Self, Self::Error> {
+        let expected_tx_count: usize = col.block_tx_counts.iter().map(|c| *c as usize).sum();
+        if col.tx_hashes.len() != expected_tx_count
+            || col.tx_froms.len() != expected_tx_count
+            || col.tx_tos.len() != expected_tx_count
+            || col.tx_gas_used.len() != expected_tx_count
+            || col.tx_max_priority_fees.len() != expected_tx_count
+            || col.tx_max_fees.len() != expected_tx_count
+        {
+            return Err(format!(
+                "columnar tx count mismatch: tx_counts sum to {expected_tx_count} \
+                 but vectors have lengths {}/{}/{}/{}/{}/{}",
+                col.tx_hashes.len(),
+                col.tx_froms.len(),
+                col.tx_tos.len(),
+                col.tx_gas_used.len(),
+                col.tx_max_priority_fees.len(),
+                col.tx_max_fees.len(),
+            ));
+        }
+        if col.block_timestamps.len() != col.block_numbers.len()
+            || col.block_base_fees.len() != col.block_numbers.len()
+            || col.block_tx_counts.len() != col.block_numbers.len()
+        {
+            return Err("columnar block-level vector length mismatch".into());
+        }
+
         let mut blocks = Vec::with_capacity(col.block_numbers.len());
         let mut tx_offset = 0usize;
 
@@ -254,11 +282,11 @@ impl From<ColumnarChunkData> for ChunkData {
             });
         }
 
-        ChunkData {
+        Ok(ChunkData {
             start_block: col.start_block,
             end_block: col.end_block,
             blocks,
-        }
+        })
     }
 }
 

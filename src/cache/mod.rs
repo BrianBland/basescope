@@ -40,7 +40,7 @@ impl Cache {
         }
         let col: ColumnarChunkData = bincode::deserialize(&decompressed[V1_MAGIC.len()..])
             .map_err(|e| SpamscanError::Serialization(e.to_string()))?;
-        Ok(ChunkData::from(col))
+        ChunkData::try_from(col).map_err(SpamscanError::Serialization)
     }
 
     pub fn save_chunk(&self, chunk: &ChunkData) -> Result<(), SpamscanError> {
