@@ -11,8 +11,8 @@ use crate::tui::{App, HistogramMode};
 
 use super::colors::{blend_colors, filter_color, filter_rgb};
 use super::{
-    filter_visible, format_fee_label, group_series_avg, group_series_sum, pick_fee_unit,
-    truncate_to, FilterSeries,
+    filter_visible, format_bytes, format_fee_label, format_gas, group_series_avg,
+    group_series_sum, pick_fee_unit, truncate_to, FilterSeries,
 };
 
 type HistSlices<'a> = Vec<(&'a str, usize, &'a [(f64, f64)])>;
@@ -34,26 +34,14 @@ fn key_to_bucket(key: i64, mode: ChartMode) -> f64 {
     key as f64 / p
 }
 
-fn format_si(value: f64) -> String {
-    if value >= 1_000_000_000.0 {
-        format!("{:.1}B", value / 1_000_000_000.0)
-    } else if value >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value >= 1_000.0 {
-        format!("{:.0}K", value / 1_000.0)
+fn max_bucket_count(inner_width: usize, bar_w: u16, gap: usize) -> usize {
+    let slot = bar_w as usize + gap;
+    if slot > 0 {
+        inner_width / slot
     } else {
-        format!("{:.0}", value)
+        20
     }
-}
-
-fn format_si_bytes(value: f64) -> String {
-    if value >= 1_000_000.0 {
-        format!("{:.1}MB", value / 1_000_000.0)
-    } else if value >= 1_000.0 {
-        format!("{:.0}KB", value / 1_000.0)
-    } else {
-        format!("{:.0}B", value)
-    }
+    .max(2)
 }
 
 fn format_bucket_label(lo: f64, hi: f64, mode: ChartMode) -> String {
@@ -64,16 +52,16 @@ fn format_bucket_label(lo: f64, hi: f64, mode: ChartMode) -> String {
         }
         ChartMode::GasUsed => {
             if (hi - lo).abs() < 1.0 {
-                format_si(lo)
+                format_gas(lo)
             } else {
-                format!("{}-{}", format_si(lo), format_si(hi))
+                format!("{}-{}", format_gas(lo), format_gas(hi))
             }
         }
         ChartMode::TxSize => {
             if (hi - lo).abs() < 1.0 {
-                format_si_bytes(lo)
+                format_bytes(lo)
             } else {
-                format!("{}-{}", format_si_bytes(lo), format_si_bytes(hi))
+                format!("{}-{}", format_bytes(lo), format_bytes(hi))
             }
         }
     }
@@ -211,12 +199,7 @@ fn render_histogram_filter_matches(
         .fold(0.0_f64, f64::max);
     let label_w = estimate_bar_label_width(hist_max_val, chart_mode);
     let bar_w = label_w.max(3) as u16;
-    let max_buckets = if (bar_w as usize + gap) > 0 {
-        inner_width / (bar_w as usize + gap)
-    } else {
-        20
-    }
-    .max(2);
+    let max_buckets = max_bucket_count(inner_width, bar_w, gap);
 
     let mut all_merged: Vec<(f64, f64, f64, &str, usize)> = Vec::new();
     for (prefix, color_idx, hist) in &raw_hists {
@@ -334,12 +317,7 @@ fn render_histogram_all_blocks(
     let hist_max_val = hist_data.iter().map(|(v, _)| *v).fold(0.0_f64, f64::max);
     let label_w = estimate_bar_label_width(hist_max_val, chart_mode);
     let bar_w_init = label_w.max(3) as u16;
-    let max_buckets = if (bar_w_init as usize + gap) > 0 {
-        inner_width / (bar_w_init as usize + gap)
-    } else {
-        20
-    }
-    .max(2);
+    let max_buckets = max_bucket_count(inner_width, bar_w_init, gap);
 
     let merged = smart_rebucket(&hist_data, max_buckets, chart_mode);
 
@@ -485,12 +463,7 @@ fn render_histogram_stacked(
     let hist_max_val = raw_hist.iter().map(|(v, _)| *v).fold(0.0_f64, f64::max);
     let label_w = estimate_bar_label_width(hist_max_val, chart_mode);
     let bar_w_init = label_w.max(3) as u16;
-    let max_buckets = if (bar_w_init as usize + gap) > 0 {
-        inner_width / (bar_w_init as usize + gap)
-    } else {
-        20
-    }
-    .max(2);
+    let max_buckets = max_bucket_count(inner_width, bar_w_init, gap);
     let merged = smart_rebucket(&raw_hist, max_buckets, chart_mode);
 
     let gran_suffix = app.granularity_label();

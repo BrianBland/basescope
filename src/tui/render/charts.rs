@@ -98,6 +98,7 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let g = app.effective_granularity();
     let ref_rect = tx_area.unwrap_or(bf_area);
     let x_labels = x_axis_labels(x_min, x_max, ref_rect.width.saturating_sub(8) as usize);
+    let first_x_label_w = x_labels.first().map_or(0, |l| l.len()) as u16;
 
     let grouped_filter_series: FilterSeries = snapshot
         .filters
