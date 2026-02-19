@@ -144,6 +144,7 @@ pub struct TxRecord {
     pub from: [u8; 20],
     pub to: Option<[u8; 20]>,
     pub gas_used: u64,
+    pub rlp_size: u64,
     /// Wei.
     pub max_priority_fee: u128,
     /// Wei.
@@ -184,6 +185,7 @@ pub struct ColumnarChunkData {
     pub tx_froms: Vec<[u8; 20]>,
     pub tx_tos: Vec<Option<[u8; 20]>>,
     pub tx_gas_used: Vec<u64>,
+    pub tx_rlp_sizes: Vec<u64>,
     pub tx_max_priority_fees: Vec<u128>,
     pub tx_max_fees: Vec<u128>,
 }
@@ -204,6 +206,7 @@ impl From<&ChunkData> for ColumnarChunkData {
             tx_froms: Vec::with_capacity(tx_count),
             tx_tos: Vec::with_capacity(tx_count),
             tx_gas_used: Vec::with_capacity(tx_count),
+            tx_rlp_sizes: Vec::with_capacity(tx_count),
             tx_max_priority_fees: Vec::with_capacity(tx_count),
             tx_max_fees: Vec::with_capacity(tx_count),
         };
@@ -218,6 +221,7 @@ impl From<&ChunkData> for ColumnarChunkData {
                 col.tx_froms.push(tx.from);
                 col.tx_tos.push(tx.to);
                 col.tx_gas_used.push(tx.gas_used);
+                col.tx_rlp_sizes.push(tx.rlp_size);
                 col.tx_max_priority_fees.push(tx.max_priority_fee);
                 col.tx_max_fees.push(tx.max_fee);
             }
@@ -236,16 +240,18 @@ impl TryFrom<ColumnarChunkData> for ChunkData {
             || col.tx_froms.len() != expected_tx_count
             || col.tx_tos.len() != expected_tx_count
             || col.tx_gas_used.len() != expected_tx_count
+            || (!col.tx_rlp_sizes.is_empty() && col.tx_rlp_sizes.len() != expected_tx_count)
             || col.tx_max_priority_fees.len() != expected_tx_count
             || col.tx_max_fees.len() != expected_tx_count
         {
             return Err(format!(
                 "columnar tx count mismatch: tx_counts sum to {expected_tx_count} \
-                 but vectors have lengths {}/{}/{}/{}/{}/{}",
+                 but vectors have lengths {}/{}/{}/{}/{}/{}/{}",
                 col.tx_hashes.len(),
                 col.tx_froms.len(),
                 col.tx_tos.len(),
                 col.tx_gas_used.len(),
+                col.tx_rlp_sizes.len(),
                 col.tx_max_priority_fees.len(),
                 col.tx_max_fees.len(),
             ));
@@ -269,6 +275,11 @@ impl TryFrom<ColumnarChunkData> for ChunkData {
                     from: col.tx_froms[j],
                     to: col.tx_tos[j],
                     gas_used: col.tx_gas_used[j],
+                    rlp_size: if col.tx_rlp_sizes.is_empty() {
+                        0
+                    } else {
+                        col.tx_rlp_sizes[j]
+                    },
                     max_priority_fee: col.tx_max_priority_fees[j],
                     max_fee: col.tx_max_fees[j],
                 });
@@ -290,14 +301,61 @@ impl TryFrom<ColumnarChunkData> for ChunkData {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChartMode {
+    TxCount,
+    GasUsed,
+    DaSize,
+}
+
+impl ChartMode {
+    pub fn next(self) -> Self {
+        match self {
+            ChartMode::TxCount => ChartMode::GasUsed,
+            ChartMode::GasUsed => ChartMode::DaSize,
+            ChartMode::DaSize => ChartMode::TxCount,
+        }
+    }
+
+    pub fn top_title(self) -> &'static str {
+        match self {
+            ChartMode::TxCount => "tx count",
+            ChartMode::GasUsed => "gas used",
+            ChartMode::DaSize => "DA bytes",
+        }
+    }
+
+    pub fn mid_title(self) -> &'static str {
+        match self {
+            ChartMode::TxCount => "base fee",
+            ChartMode::GasUsed => "gas per block",
+            ChartMode::DaSize => "DA per block",
+        }
+    }
+
+    pub fn y_axis_label(self) -> &'static str {
+        match self {
+            ChartMode::TxCount => "txs",
+            ChartMode::GasUsed => "gas",
+            ChartMode::DaSize => "bytes",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AnalysisSnapshot {
     /// (block_number, matching_tx_count) per filter.
     pub filter_series: HashMap<FilterId, Vec<(f64, f64)>>,
+    pub gas_series: HashMap<FilterId, Vec<(f64, f64)>>,
+    pub da_series: HashMap<FilterId, Vec<(f64, f64)>>,
     /// (block_number, base_fee_gwei) for all blocks — the bottom chart.
     pub base_fee_series: Vec<(f64, f64)>,
+    pub block_gas_series: Vec<(f64, f64)>,
+    pub block_da_series: Vec<(f64, f64)>,
     /// Union of all enabled filters: (block_number, matching_tx_count).
     pub aggregate_series: Vec<(f64, f64)>,
+    pub aggregate_gas_series: Vec<(f64, f64)>,
+    pub aggregate_da_series: Vec<(f64, f64)>,
     pub blocks_fetched: usize,
     pub filters: Vec<TxFilter>,
     pub show_aggregate: bool,
@@ -306,16 +364,50 @@ pub struct AnalysisSnapshot {
 impl AnalysisSnapshot {
     pub fn new(filters: &[TxFilter]) -> Self {
         let mut filter_series = HashMap::new();
+        let mut gas_series = HashMap::new();
+        let mut da_series = HashMap::new();
         for f in filters {
             filter_series.insert(f.id, Vec::new());
+            gas_series.insert(f.id, Vec::new());
+            da_series.insert(f.id, Vec::new());
         }
         Self {
             filter_series,
+            gas_series,
+            da_series,
             base_fee_series: Vec::new(),
+            block_gas_series: Vec::new(),
+            block_da_series: Vec::new(),
             aggregate_series: Vec::new(),
+            aggregate_gas_series: Vec::new(),
+            aggregate_da_series: Vec::new(),
             blocks_fetched: 0,
             filters: filters.to_vec(),
             show_aggregate: false,
+        }
+    }
+
+    pub fn filter_series_for(&self, mode: ChartMode, id: &FilterId) -> Option<&Vec<(f64, f64)>> {
+        match mode {
+            ChartMode::TxCount => self.filter_series.get(id),
+            ChartMode::GasUsed => self.gas_series.get(id),
+            ChartMode::DaSize => self.da_series.get(id),
+        }
+    }
+
+    pub fn aggregate_series_for(&self, mode: ChartMode) -> &[(f64, f64)] {
+        match mode {
+            ChartMode::TxCount => &self.aggregate_series,
+            ChartMode::GasUsed => &self.aggregate_gas_series,
+            ChartMode::DaSize => &self.aggregate_da_series,
+        }
+    }
+
+    pub fn block_series_for(&self, mode: ChartMode) -> &[(f64, f64)] {
+        match mode {
+            ChartMode::TxCount => &self.base_fee_series,
+            ChartMode::GasUsed => &self.block_gas_series,
+            ChartMode::DaSize => &self.block_da_series,
         }
     }
 }
@@ -356,8 +448,7 @@ mod tests {
 
     #[test]
     fn parse_filter_addr() {
-        let (kind, _) =
-            parse_filter("addr:0x0000000000000000000000000000000000000002").unwrap();
+        let (kind, _) = parse_filter("addr:0x0000000000000000000000000000000000000002").unwrap();
         assert!(matches!(kind, FilterKind::ToOrFrom(_)));
     }
 

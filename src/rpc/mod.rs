@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use alloy::consensus::Transaction;
+use alloy::eips::eip2718::Encodable2718;
 use alloy::eips::BlockNumberOrTag;
 use alloy::network::{AnyNetwork, BlockResponse, TransactionResponse};
 use alloy::providers::{Provider, ProviderBuilder, RootProvider};
@@ -212,6 +213,7 @@ impl RpcClient {
         let mut transactions = Vec::with_capacity(txs.len());
         for tx in txs {
             let gas_used = tx.inner.inner.gas_limit();
+            let rlp_size = tx.inner.inner.encode_2718_len() as u64;
             let max_priority_fee = tx.inner.inner.max_priority_fee_per_gas().unwrap_or(0);
             let max_fee = tx.inner.inner.max_fee_per_gas();
             let to_addr = tx.inner.inner.to();
@@ -220,6 +222,7 @@ impl RpcClient {
                 from: tx.from().0 .0,
                 to: to_addr.map(|a| a.0 .0),
                 gas_used,
+                rlp_size,
                 max_priority_fee,
                 max_fee,
             });
