@@ -180,9 +180,6 @@ fn render_histogram_filter_matches(
 ) {
     let value_lookup = build_value_lookup(snapshot, chart_mode);
 
-    // Always use tx-count series for match detection: we want to know which
-    // blocks had matching txs, then bucket those blocks by the current mode's
-    // block-level value (base fee / gas / DA).
     let owned_hists: FilterSeries = if snapshot.show_aggregate {
         let agg = &snapshot.aggregate_series;
         let visible = filter_visible(agg, x_min, x_max);
@@ -282,9 +279,9 @@ fn render_histogram_filter_matches(
         })
         .collect();
 
-    let gran_suffix = app.granularity_label();
+    let _ = app;
     let title = format!(
-        "{} histogram — filter matches{gran_suffix} [h: switch]",
+        "{} histogram — filter matches [h: switch]",
         hist_title_prefix(chart_mode)
     );
 
