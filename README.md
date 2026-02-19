@@ -7,7 +7,8 @@ A terminal UI for analyzing transaction activity on Base. Fetches blocks over JS
 ## Features
 
 - **Filter-based tx scanning** — define filters like `to:0x...`, `from:0x...`, or `addr:0x...` with optional labels
-- **Live-updating charts** — tx count per block, base fee over time, and base fee histograms update as blocks stream in
+- **Live-updating charts** — tx count, gas usage, and DA size per block; base fee / gas / DA over time; and distribution histograms update as blocks stream in
+- **Chart type switching** — press `t` to cycle between tx count, gas used, and DA (RLP-encoded) size views across all charts
 - **Color-coded overlays** — each filter gets a distinct color across all charts; overlapping regions blend automatically
 - **Aggregate mode** — toggle to union all filter matches into a single series
 - **Zoom & pan** — scroll wheel or z/Z to zoom into block ranges; horizontal scroll or arrow keys to pan; Home to reset
@@ -80,6 +81,7 @@ All CLI flags can be set via environment variables or a `.env` file:
 | `G` | Set custom granularity (number or "auto") |
 | `h` | Cycle histogram mode (filter matches → all blocks → stacked) |
 | `s` | Cycle base fee Y-axis scale (linear → log → sqrt) |
+| `t` | Cycle chart type (tx count → gas used → DA size) |
 | `l` | Toggle log panel |
 | `r` | Toggle RPC info panel |
 | `z` / `Z` | Zoom in / out (centered on cursor) |
