@@ -84,12 +84,13 @@ All CLI flags can be set via environment variables or a `.env` file:
 | `t` | Cycle chart type (tx count → gas used → tx size) |
 | `l` | Toggle log panel |
 | `r` | Toggle RPC info panel |
+| `c` / click | Copy hovered block number to clipboard |
 | `z` / `Z` | Zoom in / out (centered on cursor) |
 | `←` / `→` | Pan left / right when zoomed |
 | `Home` | Reset zoom to full range |
 | `q` | Quit |
 
-Mouse movement over the top two charts shows a crosshair with block number and base fee. Vertical scroll zooms; horizontal scroll pans.
+Mouse movement over the top two charts shows a crosshair with block number and values. Click or press `c` to copy the block number to the clipboard. Vertical scroll zooms; horizontal scroll pans.
 
 ## Testing
 

@@ -20,3 +20,4 @@ Always run all three before considering any change complete.
 ## Keeping Docs in Sync
 
 Any changes to project structure, modules, or architecture must be reflected in both this file and `README.md`.
+Any changes to usage (keybindings, CLI flags, environment variables, features) must be reflected in `README.md`.
