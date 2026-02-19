@@ -47,6 +47,14 @@ fn format_mid_value(value: f64, mode: ChartMode) -> String {
     }
 }
 
+fn format_top_value(value: f64, mode: ChartMode) -> String {
+    match mode {
+        ChartMode::TxCount => format!("{:.0} txs", value),
+        ChartMode::GasUsed => format_gas(value),
+        ChartMode::DaSize => format_bytes(value),
+    }
+}
+
 fn mid_y_labels(y_min: f64, y_max: f64, mode: ChartMode) -> Vec<String> {
     let mid = (y_min + y_max) / 2.0;
     let q1 = (y_min + mid) / 2.0;
@@ -162,6 +170,9 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         1.0
     };
 
+    let visible_agg = filter_visible(snapshot.aggregate_series_for(chart_mode), x_min, x_max);
+    let grouped_agg = group_series_sum(visible_agg, g);
+
     let crosshair = compute_crosshair(
         app,
         tx_area,
@@ -183,8 +194,10 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         let tx_title = match &crosshair {
             Some(ch) => {
                 let mid_str = format_mid_value(ch.mid_y, chart_mode);
+                let top_y = nearest_y(&grouped_agg, ch.data_x);
+                let top_str = format_top_value(top_y, chart_mode);
                 format!(
-                    "{} per block{gran_suffix}  │  blk {:.0}  {} {mid_str}",
+                    "{} per block{gran_suffix}  │  blk {:.0}  {top_str}  {} {mid_str}",
                     chart_mode.top_title(),
                     ch.data_x,
                     chart_mode.mid_title(),
@@ -267,13 +280,21 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     } else {
         ""
     };
+    let mid_title = match &crosshair {
+        Some(ch) => {
+            let mid_str = format_mid_value(ch.mid_y, chart_mode);
+            format!(
+                "{}{gran_suffix}{scale_suffix}  │  blk {:.0}  {mid_str}",
+                chart_mode.mid_title(),
+                ch.data_x,
+            )
+        }
+        None => format!("{}{gran_suffix}{scale_suffix}", chart_mode.mid_title()),
+    };
     let mid_chart = Chart::new(bf_datasets)
         .block(
             Block::default()
-                .title(format!(
-                    "{}{gran_suffix}{scale_suffix}",
-                    chart_mode.mid_title()
-                ))
+                .title(mid_title)
                 .borders(Borders::ALL),
         )
         .x_axis(

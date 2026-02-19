@@ -180,8 +180,11 @@ fn render_histogram_filter_matches(
 ) {
     let value_lookup = build_value_lookup(snapshot, chart_mode);
 
+    // Always use tx-count series for match detection: we want to know which
+    // blocks had matching txs, then bucket those blocks by the current mode's
+    // block-level value (base fee / gas / DA).
     let owned_hists: FilterSeries = if snapshot.show_aggregate {
-        let agg = snapshot.aggregate_series_for(chart_mode);
+        let agg = &snapshot.aggregate_series;
         let visible = filter_visible(agg, x_min, x_max);
         let hist = accumulate_histogram_weighted(visible, &value_lookup, chart_mode);
         vec![("".to_string(), 0, hist)]
@@ -191,7 +194,7 @@ fn render_histogram_filter_matches(
             .iter()
             .filter(|f| f.enabled)
             .filter_map(|f| {
-                snapshot.filter_series_for(chart_mode, &f.id).map(|series| {
+                snapshot.filter_series.get(&f.id).map(|series| {
                     let visible = filter_visible(series, x_min, x_max);
                     let hist = accumulate_histogram_weighted(visible, &value_lookup, chart_mode);
                     (f.label.clone(), f.color_index, hist)
@@ -349,15 +352,13 @@ fn render_histogram_all_blocks(
     let visible_filter_hists: HashMap<FilterId, Vec<(f64, f64)>> = enabled_filters
         .iter()
         .filter_map(|f| {
-            snapshot
-                .filter_series_for(chart_mode, &f.id)
-                .map(|series| {
-                    let vis = filter_visible(series, x_min, x_max);
-                    (
-                        f.id,
-                        accumulate_histogram_weighted(vis, &value_lookup, chart_mode),
-                    )
-                })
+            snapshot.filter_series.get(&f.id).map(|series| {
+                let vis = filter_visible(series, x_min, x_max);
+                (
+                    f.id,
+                    accumulate_histogram_weighted(vis, &value_lookup, chart_mode),
+                )
+            })
         })
         .collect();
 
@@ -439,7 +440,8 @@ fn render_histogram_stacked(
         .iter()
         .map(|f| {
             snapshot
-                .filter_series_for(chart_mode, &f.id)
+                .filter_series
+                .get(&f.id)
                 .map(|series| {
                     filter_visible(series, x_min, x_max)
                         .iter()
