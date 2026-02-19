@@ -12,32 +12,10 @@ use super::colors::{blend_colors, filter_color, filter_rgb};
 use super::histogram::render_histogram;
 use super::sidebar::render_sidebar;
 use super::{
-    by_labels_width, chart_inner, filter_visible, format_fee_value, group_series_avg,
-    group_series_sum, nearest_y, scaled_y_labels_gwei, series_x_bounds, series_y_bounds,
-    x_axis_labels, y_labels_int, FilterEntry, FilterSeries,
+    chart_inner, filter_visible, format_bytes, format_fee_value, format_gas, group_series_avg,
+    group_series_sum, nearest_point, nearest_y, scaled_y_labels_gwei, series_x_bounds,
+    series_y_bounds, x_axis_labels, y_labels_int, FilterEntry, FilterSeries,
 };
-
-fn format_bytes(bytes: f64) -> String {
-    if bytes >= 1_000_000.0 {
-        format!("{:.1}MB", bytes / 1_000_000.0)
-    } else if bytes >= 1_000.0 {
-        format!("{:.0}KB", bytes / 1_000.0)
-    } else {
-        format!("{:.0}B", bytes)
-    }
-}
-
-fn format_gas(gas: f64) -> String {
-    if gas >= 1_000_000_000.0 {
-        format!("{:.1}Bgas", gas / 1_000_000_000.0)
-    } else if gas >= 1_000_000.0 {
-        format!("{:.1}Mgas", gas / 1_000_000.0)
-    } else if gas >= 1_000.0 {
-        format!("{:.0}Kgas", gas / 1_000.0)
-    } else {
-        format!("{:.0}gas", gas)
-    }
-}
 
 fn format_mid_value(value: f64, mode: ChartMode) -> String {
     match mode {
@@ -158,11 +136,15 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         .collect();
     let (ty_min, ty_max) = series_y_bounds(&tx_series_refs);
 
-    let original_by_max = scale.invert(by_max);
-    let original_by_min = scale.invert(by_min);
-    let y_label_w = by_labels_width(original_by_min, original_by_max);
+    let by_labels = if use_scale {
+        scaled_y_labels_gwei(by_min, by_max, &scale)
+    } else {
+        mid_y_labels(by_min, by_max, chart_mode)
+    };
+    let y_label_w = by_labels.iter().map(|l| l.len()).max().unwrap_or(0) as u16;
     app.view.last_y_label_w.set(y_label_w);
-    let graph_w_chars = chart_inner(ref_rect, y_label_w).width as f64;
+    app.view.first_x_label_w.set(first_x_label_w);
+    let graph_w_chars = chart_inner(ref_rect, y_label_w, first_x_label_w).width as f64;
     let x_range = x_max - x_min;
     let cell_w = if graph_w_chars > 0.0 && x_range > 0.0 {
         x_range / graph_w_chars
@@ -173,6 +155,7 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let visible_agg = filter_visible(snapshot.aggregate_series_for(chart_mode), x_min, x_max);
     let grouped_agg = group_series_sum(visible_agg, g);
 
+    app.view.hovered_block.set(None);
     let crosshair = compute_crosshair(
         app,
         tx_area,
@@ -184,6 +167,7 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         by_min,
         by_max,
         y_label_w,
+        first_x_label_w,
         &grouped_mid,
     );
     let scaled_crosshair_y = crosshair.as_ref().map(|ch| scale.apply(ch.mid_y));
@@ -206,7 +190,7 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
             None => format!("{} per block{gran_suffix}", chart_mode.top_title()),
         };
 
-        let tx_graph_h = chart_inner(tx_rect, y_label_w).height as f64;
+        let tx_graph_h = chart_inner(tx_rect, y_label_w, first_x_label_w).height as f64;
         let ty_range = ty_max - ty_min;
         let cell_h = if tx_graph_h > 0.0 && ty_range > 0.0 {
             ty_range / tx_graph_h
@@ -242,12 +226,6 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
             );
         frame.render_widget(tx_chart, tx_rect);
     }
-
-    let by_labels = if use_scale {
-        scaled_y_labels_gwei(by_min, by_max, &scale)
-    } else {
-        mid_y_labels(by_min, by_max, chart_mode)
-    };
 
     let scaled_mid_by_x: HashMap<u64, f64> = scaled_mid
         .iter()
@@ -312,10 +290,10 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(mid_chart, bf_area);
 
     if let Some(tx_rect) = tx_area {
-        let tx_inner = chart_inner(tx_rect, y_label_w);
+        let tx_inner = chart_inner(tx_rect, y_label_w, first_x_label_w);
         paint_time_of_day_bg(frame, tx_inner, x_min, x_max);
     }
-    let bf_inner = chart_inner(bf_area, y_label_w);
+    let bf_inner = chart_inner(bf_area, y_label_w, first_x_label_w);
     paint_time_of_day_bg(frame, bf_inner, x_min, x_max);
 
     if let Some(ch) = &crosshair {
@@ -331,6 +309,7 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
             by_min,
             by_max,
             y_label_w,
+            first_x_label_w,
         );
     }
 
@@ -359,6 +338,7 @@ fn compute_crosshair(
     _by_min: f64,
     _by_max: f64,
     y_label_w: u16,
+    first_x_label_w: u16,
     grouped_mid: &[(f64, f64)],
 ) -> Option<Crosshair> {
     let col = app.view.mouse_col;
@@ -384,7 +364,7 @@ fn compute_crosshair(
     } else {
         bf_rect
     };
-    let inner = chart_inner(chart_rect, y_label_w);
+    let inner = chart_inner(chart_rect, y_label_w, first_x_label_w);
 
     if col < inner.x || col >= inner.x + inner.width || inner.width == 0 {
         return None;
@@ -393,10 +373,11 @@ fn compute_crosshair(
     let graph_w = inner.width.saturating_sub(1).max(1) as f64;
     let frac = ((col - inner.x) as f64) / graph_w;
     let frac = frac.clamp(0.0, 1.0);
-    let data_x = x_min + frac * (x_max - x_min);
+    let raw_x = x_min + frac * (x_max - x_min);
 
-    let mid_y = nearest_y(grouped_mid, data_x);
+    let (data_x, mid_y) = nearest_point(grouped_mid, raw_x)?;
 
+    app.view.hovered_block.set(Some(data_x.round() as u64));
     Some(Crosshair { data_x, mid_y })
 }
 
@@ -409,7 +390,9 @@ fn data_to_col(data_x: f64, x_min: f64, x_max: f64, inner: Rect) -> Option<u16> 
     if !(0.0..=1.0).contains(&frac) {
         return None;
     }
-    Some(inner.x + (frac * (inner.width.saturating_sub(1)) as f64).round() as u16)
+    // Braille: 2 dots per cell. Truncate pixel to cell.
+    let x_pixel = (frac * (inner.width as f64 * 2.0 - 1.0)) as u16;
+    Some(inner.x + x_pixel / 2)
 }
 
 fn data_to_row(data_y: f64, y_min: f64, y_max: f64, inner: Rect) -> Option<u16> {
@@ -421,10 +404,9 @@ fn data_to_row(data_y: f64, y_min: f64, y_max: f64, inner: Rect) -> Option<u16> 
     if !(0.0..=1.0).contains(&frac) {
         return None;
     }
-    Some(
-        inner.y + inner.height.saturating_sub(1)
-            - (frac * (inner.height.saturating_sub(1)) as f64).round() as u16,
-    )
+    // Braille: 4 dots per cell. Truncate pixel to cell.
+    let y_pixel = (frac * (inner.height as f64 * 4.0 - 1.0)) as u16;
+    Some(inner.y + inner.height.saturating_sub(1) - y_pixel / 4)
 }
 
 fn local_utc_offset_secs() -> i64 {
@@ -502,15 +484,16 @@ fn draw_crosshair_highlight(
     by_min: f64,
     by_max: f64,
     y_label_w: u16,
+    first_x_label_w: u16,
 ) {
-    let bf_inner = chart_inner(bf_rect, y_label_w);
+    let bf_inner = chart_inner(bf_rect, y_label_w, first_x_label_w);
     let bf_col = data_to_col(data_x, x_min, x_max, bf_inner);
     let bf_row = data_to_row(scaled_mid_y, by_min, by_max, bf_inner);
 
     let buf = frame.buffer_mut();
 
     if let Some(tx_rect) = tx_area {
-        let tx_inner = chart_inner(tx_rect, y_label_w);
+        let tx_inner = chart_inner(tx_rect, y_label_w, first_x_label_w);
         if let Some(col) = data_to_col(data_x, x_min, x_max, tx_inner) {
             for row in tx_inner.y..tx_inner.y + tx_inner.height {
                 highlight_cell(buf, col, row, CROSSHAIR_BG);

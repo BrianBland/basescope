@@ -3,8 +3,9 @@ pub mod log_layer;
 pub mod render;
 
 use std::cell::Cell;
+use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -179,6 +180,8 @@ pub struct ViewState {
     pub scale_mode: ScaleMode,
     pub chart_mode: ChartMode,
     pub show_help: bool,
+    pub hovered_block: Cell<Option<u64>>,
+    pub first_x_label_w: Cell<u16>,
 }
 
 pub struct App {
@@ -195,6 +198,7 @@ pub struct App {
     pub cache: Cache,
     pub concurrency: usize,
     pub should_quit: bool,
+    pub toast: Option<(String, Instant)>,
     pub log_buffer: LogBuffer,
     pub chunk_states: Vec<ChunkState>,
     pub chunk_progress: Vec<f32>,
@@ -235,6 +239,8 @@ impl App {
                 scale_mode: ScaleMode::Linear,
                 chart_mode: ChartMode::TxCount,
                 show_help: false,
+                hovered_block: Cell::new(None),
+                first_x_label_w: Cell::new(0),
             },
             filters: Vec::new(),
             analysis: None,
@@ -246,6 +252,7 @@ impl App {
             cache,
             concurrency,
             should_quit: false,
+            toast: None,
             log_buffer,
             chunk_states: Vec::new(),
             chunk_progress: Vec::new(),
@@ -277,6 +284,11 @@ impl App {
     }
 
     fn handle_tick(&mut self) -> Result<()> {
+        if let Some((_, created)) = &self.toast
+            && created.elapsed() >= Duration::from_secs(2)
+        {
+            self.toast = None;
+        }
         if self.mode != AppMode::Fetching {
             return Ok(());
         }
@@ -399,6 +411,10 @@ impl App {
                     self.view.chart_mode = self.view.chart_mode.next();
                     return Ok(());
                 }
+                KeyCode::Char('c') => {
+                    self.copy_hovered_block();
+                    return Ok(());
+                }
                 KeyCode::Char('a') => {
                     if let Some(analyzer) = &mut self.analysis {
                         analyzer.toggle_aggregate();
@@ -457,6 +473,13 @@ impl App {
                 self.view.mouse_col = mouse.column;
                 self.view.mouse_row = mouse.row;
             }
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                self.view.mouse_col = mouse.column;
+                self.view.mouse_row = mouse.row;
+                if matches!(self.mode, AppMode::Fetching | AppMode::Results) {
+                    self.copy_hovered_block();
+                }
+            }
             MouseEventKind::ScrollUp => {
                 self.view.mouse_col = mouse.column;
                 self.view.mouse_row = mouse.row;
@@ -482,6 +505,18 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn copy_hovered_block(&mut self) {
+        if let Some(block) = self.view.hovered_block.get() {
+            let text = block.to_string();
+            let msg = if copy_to_clipboard(&text) {
+                format!("copied block {text}")
+            } else {
+                format!("block {text} (clipboard unavailable)")
+            };
+            self.toast = Some((msg, Instant::now()));
         }
     }
 
@@ -718,7 +753,8 @@ impl App {
 
         let chart_rect = if in_tx { tx_rect } else { bf_rect };
         let y_label_w = self.view.last_y_label_w.get();
-        let inner = render::chart_inner(chart_rect, y_label_w);
+        let first_x_label_w = self.view.first_x_label_w.get();
+        let inner = render::chart_inner(chart_rect, y_label_w, first_x_label_w);
 
         if col < inner.x || col >= inner.x + inner.width || inner.width == 0 {
             return None;
@@ -798,6 +834,32 @@ impl App {
 
         self.view.view_start = Some(new_min);
         self.view.view_end = Some(new_max);
+    }
+}
+
+fn copy_to_clipboard(text: &str) -> bool {
+    let mut child = if cfg!(target_os = "macos") {
+        std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    } else {
+        std::process::Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    };
+    match child {
+        Ok(ref mut c) => {
+            if let Some(ref mut stdin) = c.stdin {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            c.wait().is_ok_and(|s| s.success())
+        }
+        Err(_) => false,
     }
 }
 

@@ -7,6 +7,8 @@ mod sidebar;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Frame;
+use ratatui::style::{Color, Style};
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::tui::{App, AppMode, BottomPanel, ScaleTransform};
 
@@ -55,6 +57,16 @@ pub fn render(app: &App, frame: &mut Frame) {
     if app.input.granularity_input.is_some() {
         panels::render_granularity_input(app, frame, outer);
     }
+
+    if let Some((msg, _)) = &app.toast {
+        let w = (msg.len() as u16 + 4).min(outer.width);
+        let x = outer.x + outer.width.saturating_sub(w);
+        let area = Rect::new(x, outer.y, w, 1);
+        frame.render_widget(Clear, area);
+        let toast = Paragraph::new(msg.as_str())
+            .style(Style::default().fg(Color::Black).bg(Color::Green));
+        frame.render_widget(toast, area);
+    }
 }
 
 fn render_main(app: &App, frame: &mut Frame, area: Rect) {
@@ -95,6 +107,26 @@ pub(super) fn format_fee_with_unit(gwei: f64, unit: FeeUnit) -> String {
 
 pub(super) fn format_fee_value(gwei: f64) -> String {
     format_fee_with_unit(gwei, pick_fee_unit(gwei))
+}
+
+fn format_si(value: f64, unit: &str) -> String {
+    if value >= 1_000_000_000.0 {
+        format!("{:.1}G{unit}", value / 1_000_000_000.0)
+    } else if value >= 1_000_000.0 {
+        format!("{:.1}M{unit}", value / 1_000_000.0)
+    } else if value >= 1_000.0 {
+        format!("{:.0}K{unit}", value / 1_000.0)
+    } else {
+        format!("{:.0}{unit}", value)
+    }
+}
+
+pub(super) fn format_bytes(bytes: f64) -> String {
+    format_si(bytes, "B")
+}
+
+pub(super) fn format_gas(gas: f64) -> String {
+    format_si(gas, "gas")
 }
 
 fn strip_trailing_zeros(s: &str) -> String {
@@ -250,38 +282,37 @@ pub(super) fn scaled_y_labels_gwei(
         .collect()
 }
 
-pub(super) fn nearest_y(series: &[(f64, f64)], target_x: f64) -> f64 {
+pub(super) fn nearest_point(series: &[(f64, f64)], target_x: f64) -> Option<(f64, f64)> {
     if series.is_empty() {
-        return 0.0;
+        return None;
     }
     let idx = series.partition_point(|(x, _)| *x < target_x);
     let candidates = [idx.saturating_sub(1), idx.min(series.len() - 1)];
     candidates
         .iter()
-        .map(|&i| &series[i])
+        .map(|&i| series[i])
         .min_by(|a, b| {
             (a.0 - target_x)
                 .abs()
                 .partial_cmp(&(b.0 - target_x).abs())
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .map(|pt| pt.1)
-        .unwrap_or(0.0)
 }
 
-pub(super) fn by_labels_width(by_min: f64, by_max: f64) -> u16 {
-    let sample = format!("{:.3}", by_max.max(by_min.abs()));
-    (sample.len() + 2) as u16
+pub(super) fn nearest_y(series: &[(f64, f64)], target_x: f64) -> f64 {
+    nearest_point(series, target_x).map_or(0.0, |(_, y)| y)
 }
 
-pub(crate) fn chart_inner(chart_rect: Rect, y_label_w: u16) -> Rect {
-    // Must match ratatui's Chart::layout() graph_area calculation:
-    //   block border:     1 row top, 1 row bottom, 1 col left, 1 col right
-    //   y-axis labels:    y_label_w columns
-    //   y-axis line:      1 column
-    //   x-axis labels:    1 row
-    //   x-axis line:      1 row
-    let left = chart_rect.x + 1 + y_label_w + 1;
+pub(crate) fn chart_inner(chart_rect: Rect, y_label_w: u16, first_x_label_w: u16) -> Rect {
+    // Match ratatui's Chart::layout() graph_area calculation.
+    // Block border strips 1 row/col each side. Then layout() uses:
+    //   left_labels = max(y_label_w, first_x_label_w - 1), capped at inner_w / 3
+    //   y-axis line: 1 column
+    //   x-axis labels: 1 row, x-axis line: 1 row
+    let inner_w = chart_rect.width.saturating_sub(2); // sans left+right border
+    let x_contrib = first_x_label_w.saturating_sub(1); // left-aligned: label_w - 1
+    let label_cols = y_label_w.max(x_contrib).min(inner_w / 3);
+    let left = chart_rect.x + 1 + label_cols + 1;
     let right = chart_rect.x + chart_rect.width.saturating_sub(1);
     let top = chart_rect.y + 1;
     let bottom = chart_rect.y + chart_rect.height.saturating_sub(4);

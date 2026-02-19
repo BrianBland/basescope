@@ -146,6 +146,7 @@ fn help_lines(mode: AppMode) -> Vec<Line<'static>> {
             entries.push(("l", "toggle logs"));
             entries.push(("r", "toggle rpc info"));
             entries.push(("mouse", "crosshair"));
+            entries.push(("c/click", "copy block #"));
             entries.push(("z/Z/scroll", "zoom in/out"));
             entries.push(("←/→/hscroll", "pan"));
             entries.push(("Home", "reset zoom"));
