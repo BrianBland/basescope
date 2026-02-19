@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use ratatui::layout::Rect;
 use ratatui::prelude::Frame;
@@ -6,15 +6,122 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Bar, BarChart, BarGroup, Block, Borders, Paragraph};
 
-use crate::domain::{AnalysisSnapshot, FilterId};
+use crate::domain::{AnalysisSnapshot, ChartMode, FilterId};
 use crate::tui::{App, HistogramMode};
 
 use super::colors::{blend_colors, filter_color, filter_rgb};
 use super::{
-    filter_visible, format_fee_label, group_series_avg, pick_fee_unit, truncate_to, FilterSeries,
+    filter_visible, format_fee_label, group_series_avg, group_series_sum, pick_fee_unit,
+    truncate_to, FilterSeries,
 };
 
 type HistSlices<'a> = Vec<(&'a str, usize, &'a [(f64, f64)])>;
+
+fn bucket_precision(mode: ChartMode) -> f64 {
+    match mode {
+        ChartMode::TxCount => 1000.0,
+        ChartMode::GasUsed | ChartMode::DaSize => 1.0,
+    }
+}
+
+fn quantize_bucket(value: f64, mode: ChartMode) -> i64 {
+    let p = bucket_precision(mode);
+    (value * p).floor() as i64
+}
+
+fn key_to_bucket(key: i64, mode: ChartMode) -> f64 {
+    let p = bucket_precision(mode);
+    key as f64 / p
+}
+
+fn format_si(value: f64) -> String {
+    if value >= 1_000_000_000.0 {
+        format!("{:.1}B", value / 1_000_000_000.0)
+    } else if value >= 1_000_000.0 {
+        format!("{:.1}M", value / 1_000_000.0)
+    } else if value >= 1_000.0 {
+        format!("{:.0}K", value / 1_000.0)
+    } else {
+        format!("{:.0}", value)
+    }
+}
+
+fn format_si_bytes(value: f64) -> String {
+    if value >= 1_000_000.0 {
+        format!("{:.1}MB", value / 1_000_000.0)
+    } else if value >= 1_000.0 {
+        format!("{:.0}KB", value / 1_000.0)
+    } else {
+        format!("{:.0}B", value)
+    }
+}
+
+fn format_bucket_label(lo: f64, hi: f64, mode: ChartMode) -> String {
+    match mode {
+        ChartMode::TxCount => {
+            let unit = pick_fee_unit(hi);
+            format_fee_label(lo, hi, unit)
+        }
+        ChartMode::GasUsed => {
+            if (hi - lo).abs() < 1.0 {
+                format_si(lo)
+            } else {
+                format!("{}-{}", format_si(lo), format_si(hi))
+            }
+        }
+        ChartMode::DaSize => {
+            if (hi - lo).abs() < 1.0 {
+                format_si_bytes(lo)
+            } else {
+                format!("{}-{}", format_si_bytes(lo), format_si_bytes(hi))
+            }
+        }
+    }
+}
+
+fn estimate_bar_label_width(hi: f64, mode: ChartMode) -> usize {
+    let sample = format_bucket_label(hi * 0.9, hi, mode);
+    sample.len().max(3)
+}
+
+fn accumulate_histogram(source: &[(f64, f64)], mode: ChartMode) -> Vec<(f64, f64)> {
+    let mut tree: BTreeMap<i64, f64> = BTreeMap::new();
+    for &(_block, value) in source {
+        let key = quantize_bucket(value, mode);
+        *tree.entry(key).or_default() += 1.0;
+    }
+    tree.into_iter()
+        .map(|(k, c)| (key_to_bucket(k, mode), c))
+        .collect()
+}
+
+fn accumulate_histogram_weighted(
+    block_series: &[(f64, f64)],
+    value_lookup: &HashMap<u64, f64>,
+    mode: ChartMode,
+) -> Vec<(f64, f64)> {
+    let mut tree: BTreeMap<i64, f64> = BTreeMap::new();
+    for &(block, weight) in block_series {
+        if weight <= 0.0 {
+            continue;
+        }
+        if let Some(&value) = value_lookup.get(&(block as u64)) {
+            let key = quantize_bucket(value, mode);
+            *tree.entry(key).or_default() += weight;
+        }
+    }
+    tree.into_iter()
+        .map(|(k, c)| (key_to_bucket(k, mode), c))
+        .collect()
+}
+
+fn build_value_lookup(snapshot: &AnalysisSnapshot, mode: ChartMode) -> HashMap<u64, f64> {
+    let series = snapshot.block_series_for(mode);
+    series
+        .iter()
+        .map(|(block, val)| (*block as u64, *val))
+        .collect()
+}
 
 pub(super) fn render_histogram(
     app: &App,
@@ -26,16 +133,23 @@ pub(super) fn render_histogram(
 ) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let gap = 1usize;
+    let chart_mode = app.view.chart_mode;
 
     match app.view.hist_mode {
         HistogramMode::AllBlocks => {
-            render_histogram_all_blocks(app, snapshot, frame, area, inner_width, gap, x_min, x_max);
+            render_histogram_all_blocks(
+                app, snapshot, frame, area, inner_width, gap, x_min, x_max, chart_mode,
+            );
         }
         HistogramMode::FilterMatches => {
-            render_histogram_filter_matches(snapshot, frame, area, inner_width, gap, x_min, x_max);
+            render_histogram_filter_matches(
+                app, snapshot, frame, area, inner_width, gap, x_min, x_max, chart_mode,
+            );
         }
         HistogramMode::Stacked => {
-            render_histogram_stacked(app, snapshot, frame, area, inner_width, gap, x_min, x_max);
+            render_histogram_stacked(
+                app, snapshot, frame, area, inner_width, gap, x_min, x_max, chart_mode,
+            );
         }
     }
 
@@ -52,7 +166,9 @@ pub(super) fn render_histogram(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_histogram_filter_matches(
+    app: &App,
     snapshot: &AnalysisSnapshot,
     frame: &mut Frame,
     area: Rect,
@@ -60,16 +176,14 @@ fn render_histogram_filter_matches(
     gap: usize,
     x_min: f64,
     x_max: f64,
+    chart_mode: ChartMode,
 ) {
-    let base_fee_lookup: HashMap<u64, f64> = snapshot
-        .base_fee_series
-        .iter()
-        .map(|(block, fee)| (*block as u64, *fee))
-        .collect();
+    let value_lookup = build_value_lookup(snapshot, chart_mode);
 
     let owned_hists: FilterSeries = if snapshot.show_aggregate {
-        let visible = filter_visible(&snapshot.aggregate_series, x_min, x_max);
-        let hist = build_fee_histogram(visible, &base_fee_lookup);
+        let agg = snapshot.aggregate_series_for(chart_mode);
+        let visible = filter_visible(agg, x_min, x_max);
+        let hist = accumulate_histogram_weighted(visible, &value_lookup, chart_mode);
         vec![("".to_string(), 0, hist)]
     } else {
         snapshot
@@ -77,9 +191,9 @@ fn render_histogram_filter_matches(
             .iter()
             .filter(|f| f.enabled)
             .filter_map(|f| {
-                snapshot.filter_series.get(&f.id).map(|series| {
+                snapshot.filter_series_for(chart_mode, &f.id).map(|series| {
                     let visible = filter_visible(series, x_min, x_max);
-                    let hist = build_fee_histogram(visible, &base_fee_lookup);
+                    let hist = accumulate_histogram_weighted(visible, &value_lookup, chart_mode);
                     (f.label.clone(), f.color_index, hist)
                 })
             })
@@ -91,7 +205,12 @@ fn render_histogram_filter_matches(
         .map(|(label, color_idx, hist)| (label.as_str(), *color_idx, hist.as_slice()))
         .collect();
 
-    let bar_w: u16 = 3;
+    let hist_max_val = raw_hists
+        .iter()
+        .flat_map(|(_, _, h)| h.iter().map(|(v, _)| *v))
+        .fold(0.0_f64, f64::max);
+    let label_w = estimate_bar_label_width(hist_max_val, chart_mode);
+    let bar_w = label_w.max(3) as u16;
     let max_buckets = if (bar_w as usize + gap) > 0 {
         inner_width / (bar_w as usize + gap)
     } else {
@@ -101,24 +220,19 @@ fn render_histogram_filter_matches(
 
     let mut all_merged: Vec<(f64, f64, f64, &str, usize)> = Vec::new();
     for (prefix, color_idx, hist) in &raw_hists {
-        let merged = rebucket(hist, max_buckets);
+        let merged = smart_rebucket(hist, max_buckets, chart_mode);
         for (lo, hi, count) in merged {
             all_merged.push((lo, hi, count, prefix, *color_idx));
         }
     }
-    let hist_max = all_merged
-        .iter()
-        .map(|(_, hi, _, _, _)| *hi)
-        .fold(0.0_f64, f64::max);
-    let unit = pick_fee_unit(hist_max);
 
     let mut entries: Vec<(f64, &str, String, String, u64, usize)> = Vec::new();
     for (lo, hi, count, prefix, color_idx) in &all_merged {
-        let fee = format_fee_label(*lo, *hi, unit);
+        let label = format_bucket_label(*lo, *hi, chart_mode);
         entries.push((
             *lo,
             prefix,
-            fee,
+            label,
             prefix.to_string(),
             *count as u64,
             *color_idx,
@@ -130,28 +244,31 @@ fn render_histogram_filter_matches(
             .then_with(|| a.1.cmp(b.1))
     });
 
+    let max_label_len = entries.iter().map(|(_, _, l, _, _, _)| l.len()).max().unwrap_or(3);
+    let dynamic_bar_w = max_label_len.max(3) as u16;
+
     let bar_group: Vec<Bar> = entries
         .iter()
-        .map(|(_, _, fee, prefix, value, color_idx)| {
+        .map(|(_, _, label_str, prefix, value, color_idx)| {
             let color = if snapshot.show_aggregate {
                 Color::White
             } else {
                 filter_color(*color_idx)
             };
-            let w = bar_w as usize;
+            let w = dynamic_bar_w as usize;
             let label = if prefix.is_empty() {
-                truncate_to(fee, w)
+                truncate_to(label_str, w)
             } else {
-                let fee_len = fee.len();
-                if fee_len >= w {
-                    truncate_to(fee, w)
+                let label_len = label_str.len();
+                if label_len >= w {
+                    truncate_to(label_str, w)
                 } else {
-                    let remaining = w - fee_len;
+                    let remaining = w - label_len;
                     if remaining >= 2 {
                         let pfx = truncate_to(prefix, remaining);
-                        format!("{pfx}{fee}")
+                        format!("{pfx}{label_str}")
                     } else {
-                        truncate_to(fee, w)
+                        truncate_to(label_str, w)
                     }
                 }
             };
@@ -162,13 +279,19 @@ fn render_histogram_filter_matches(
         })
         .collect();
 
+    let gran_suffix = app.granularity_label();
+    let title = format!(
+        "{} histogram — filter matches{gran_suffix} [h: switch]",
+        hist_title_prefix(chart_mode)
+    );
+
     let chart = BarChart::default()
         .block(
             Block::default()
-                .title("base fee histogram — filter matches [h: switch]")
+                .title(title)
                 .borders(Borders::ALL),
         )
-        .bar_width(bar_w)
+        .bar_width(dynamic_bar_w)
         .bar_gap(gap as u16)
         .data(BarGroup::default().bars(&bar_group));
     frame.render_widget(chart, area);
@@ -189,63 +312,59 @@ fn render_histogram_all_blocks(
     gap: usize,
     x_min: f64,
     x_max: f64,
+    chart_mode: ChartMode,
 ) {
     let g = app.effective_granularity();
-    let sample_label_len = 6;
-    let bar_w = sample_label_len.max(3) as u16;
-    let max_buckets = if (bar_w as usize + gap) > 0 {
-        inner_width / (bar_w as usize + gap)
+
+    let block_series = snapshot.block_series_for(chart_mode);
+    let visible = filter_visible(block_series, x_min, x_max);
+    let grouped;
+    let source: &[(f64, f64)] = if g > 1 {
+        grouped = match chart_mode {
+            ChartMode::TxCount => group_series_avg(visible, g),
+            ChartMode::GasUsed | ChartMode::DaSize => group_series_sum(visible, g),
+        };
+        &grouped
+    } else {
+        visible
+    };
+
+    let hist_data = accumulate_histogram(source, chart_mode);
+
+    let hist_max_val = hist_data.iter().map(|(v, _)| *v).fold(0.0_f64, f64::max);
+    let label_w = estimate_bar_label_width(hist_max_val, chart_mode);
+    let bar_w_init = label_w.max(3) as u16;
+    let max_buckets = if (bar_w_init as usize + gap) > 0 {
+        inner_width / (bar_w_init as usize + gap)
     } else {
         20
     }
     .max(2);
 
-    let visible_base_fee = filter_visible(&snapshot.base_fee_series, x_min, x_max);
-    let grouped;
-    let fee_source: &[(f64, f64)] = if g > 1 {
-        grouped = group_series_avg(visible_base_fee, g);
-        &grouped
-    } else {
-        visible_base_fee
-    };
-    let hist_data: Vec<(f64, f64)> = {
-        let mut hist: Vec<(f64, f64)> = Vec::new();
-        for &(_block, fee) in fee_source {
-            let bucket = (fee * 1000.0).floor() / 1000.0;
-            if let Some((_, count)) = hist.iter_mut().find(|(b, _)| (*b - bucket).abs() < 1e-9) {
-                *count += 1.0;
-            } else {
-                hist.push((bucket, 1.0));
-            }
-        }
-        hist.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        hist
-    };
-
-    let merged = rebucket(&hist_data, max_buckets);
-    let hist_max = merged.iter().map(|(_, hi, _)| *hi).fold(0.0_f64, f64::max);
-    let unit = pick_fee_unit(hist_max);
+    let merged = smart_rebucket(&hist_data, max_buckets, chart_mode);
 
     let enabled_filters: Vec<_> = snapshot.filters.iter().filter(|f| f.enabled).collect();
 
-    let base_fee_lookup: HashMap<u64, f64> = visible_base_fee
-        .iter()
-        .map(|(block, fee)| (*block as u64, *fee))
-        .collect();
+    let value_lookup = build_value_lookup(snapshot, chart_mode);
     let visible_filter_hists: HashMap<FilterId, Vec<(f64, f64)>> = enabled_filters
         .iter()
         .filter_map(|f| {
-            snapshot.filter_series.get(&f.id).map(|series| {
-                let visible = filter_visible(series, x_min, x_max);
-                (f.id, build_fee_histogram(visible, &base_fee_lookup))
-            })
+            snapshot
+                .filter_series_for(chart_mode, &f.id)
+                .map(|series| {
+                    let vis = filter_visible(series, x_min, x_max);
+                    (
+                        f.id,
+                        accumulate_histogram_weighted(vis, &value_lookup, chart_mode),
+                    )
+                })
         })
         .collect();
 
     let styled_bars: Vec<(String, u64, Style)> = merged
         .iter()
         .map(|(lo, hi, count)| {
-            let label = format_fee_label(*lo, *hi, unit);
+            let label = format_bucket_label(*lo, *hi, chart_mode);
             let matching_colors: Vec<(u8, u8, u8)> = enabled_filters
                 .iter()
                 .filter(|f| {
@@ -286,7 +405,10 @@ fn render_histogram_all_blocks(
         .collect();
 
     let gran_suffix = app.granularity_label();
-    let title = format!("base fee histogram — all blocks{gran_suffix} [h: switch]");
+    let title = format!(
+        "{} histogram — all blocks{gran_suffix} [h: switch]",
+        hist_title_prefix(chart_mode)
+    );
 
     let chart = BarChart::default()
         .block(Block::default().title(title).borders(Borders::ALL))
@@ -306,18 +428,18 @@ fn render_histogram_stacked(
     gap: usize,
     x_min: f64,
     x_max: f64,
+    chart_mode: ChartMode,
 ) {
     let g = app.effective_granularity();
-    let visible_base_fee = filter_visible(&snapshot.base_fee_series, x_min, x_max);
+    let block_series = snapshot.block_series_for(chart_mode);
+    let visible = filter_visible(block_series, x_min, x_max);
 
-    // Build per-filter sets of visible matching block numbers.
     let enabled_filters: Vec<_> = snapshot.filters.iter().filter(|f| f.enabled).collect();
     let filter_match_sets: Vec<HashSet<u64>> = enabled_filters
         .iter()
         .map(|f| {
             snapshot
-                .filter_series
-                .get(&f.id)
+                .filter_series_for(chart_mode, &f.id)
                 .map(|series| {
                     filter_visible(series, x_min, x_max)
                         .iter()
@@ -329,43 +451,54 @@ fn render_histogram_stacked(
         })
         .collect();
 
-    // Process chunks (respecting granularity): compute fee bucket + filter match bitmask.
-    let entries: Vec<(f64, u16)> = visible_base_fee
+    let entries: Vec<(f64, u16)> = visible
         .chunks(g.max(1))
         .map(|chunk| {
-            let avg_fee = chunk.iter().map(|(_, f)| f).sum::<f64>() / chunk.len() as f64;
-            let fee_bucket = (avg_fee * 1000.0).floor() / 1000.0;
+            let agg_value = match chart_mode {
+                ChartMode::TxCount => {
+                    let avg = chunk.iter().map(|(_, f)| f).sum::<f64>() / chunk.len() as f64;
+                    (avg * bucket_precision(chart_mode)).floor() / bucket_precision(chart_mode)
+                }
+                ChartMode::GasUsed | ChartMode::DaSize => {
+                    let sum = chunk.iter().map(|(_, f)| f).sum::<f64>();
+                    (sum * bucket_precision(chart_mode)).floor() / bucket_precision(chart_mode)
+                }
+            };
             let mask: u16 = filter_match_sets
                 .iter()
                 .enumerate()
                 .filter(|(_, set)| chunk.iter().any(|(b, _)| set.contains(&(*b as u64))))
                 .fold(0u16, |acc, (i, _)| acc | (1 << i));
-            (fee_bucket, mask)
+            (agg_value, mask)
         })
         .collect();
 
-    // Build raw histogram for rebucketing.
-    let mut raw_hist: Vec<(f64, f64)> = Vec::new();
+    let mut raw_tree: BTreeMap<i64, f64> = BTreeMap::new();
     for &(bucket, _) in &entries {
-        if let Some((_, count)) = raw_hist.iter_mut().find(|(b, _)| (*b - bucket).abs() < 1e-9) {
-            *count += 1.0;
-        } else {
-            raw_hist.push((bucket, 1.0));
-        }
+        let key = quantize_bucket(bucket, chart_mode);
+        *raw_tree.entry(key).or_default() += 1.0;
     }
-    raw_hist.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let raw_hist: Vec<(f64, f64)> = raw_tree
+        .into_iter()
+        .map(|(k, c)| (key_to_bucket(k, chart_mode), c))
+        .collect();
 
-    let bar_w_init = 6u16;
+    let hist_max_val = raw_hist.iter().map(|(v, _)| *v).fold(0.0_f64, f64::max);
+    let label_w = estimate_bar_label_width(hist_max_val, chart_mode);
+    let bar_w_init = label_w.max(3) as u16;
     let max_buckets = if (bar_w_init as usize + gap) > 0 {
         inner_width / (bar_w_init as usize + gap)
     } else {
         20
     }
     .max(2);
-    let merged = rebucket(&raw_hist, max_buckets);
+    let merged = smart_rebucket(&raw_hist, max_buckets, chart_mode);
 
     let gran_suffix = app.granularity_label();
-    let title = format!("base fee histogram — stacked{gran_suffix} [h: switch]");
+    let title = format!(
+        "{} histogram — stacked{gran_suffix} [h: switch]",
+        hist_title_prefix(chart_mode)
+    );
 
     if merged.is_empty() {
         let block_widget = Block::default().title(title).borders(Borders::ALL);
@@ -373,7 +506,6 @@ fn render_histogram_stacked(
         return;
     }
 
-    // For each merged bucket, group entries by match-mask to form stack segments.
     struct Segment {
         count: f64,
         color: Color,
@@ -397,7 +529,6 @@ fn render_histogram_stacked(
 
             let mut segments: Vec<Segment> = Vec::new();
 
-            // Unmatched (mask 0) at the bottom.
             if let Some(&count) = mask_counts.get(&0)
                 && count > 0.0
             {
@@ -407,7 +538,6 @@ fn render_histogram_stacked(
                 });
             }
 
-            // Matched segments sorted by bitmask for stable ordering.
             let mut matched: Vec<(u16, f64)> = mask_counts
                 .into_iter()
                 .filter(|(mask, _)| *mask != 0)
@@ -439,22 +569,18 @@ fn render_histogram_stacked(
         })
         .collect();
 
-    // Compute dynamic bar width from labels.
-    let hist_max_fee = stacked_bars.iter().map(|b| b.hi).fold(0.0_f64, f64::max);
-    let unit = pick_fee_unit(hist_max_fee);
     let max_label_len = stacked_bars
         .iter()
-        .map(|b| format_fee_label(b.lo, b.hi, unit).len())
+        .map(|b| format_bucket_label(b.lo, b.hi, chart_mode).len())
         .max()
         .unwrap_or(3);
     let bar_w = max_label_len.max(3) as u16;
 
-    // Render.
     let block_widget = Block::default().title(title).borders(Borders::ALL);
     let inner = block_widget.inner(area);
     frame.render_widget(block_widget, area);
 
-    let chart_height = inner.height.saturating_sub(1); // 1 row for labels
+    let chart_height = inner.height.saturating_sub(1);
     if chart_height == 0 || inner.width < 2 {
         return;
     }
@@ -485,7 +611,6 @@ fn render_histogram_stacked(
             } else {
                 0
             };
-            // Give last segment any leftover rows to avoid rounding gaps.
             let seg_rows = if seg_idx == bar.segments.len() - 1 {
                 bar_height.saturating_sub(rows_used)
             } else {
@@ -509,7 +634,6 @@ fn render_histogram_stacked(
             rows_used += seg_rows;
         }
 
-        // Value above bar.
         let bar_top = bar_bottom.saturating_sub(bar_height);
         if bar_top > inner.y {
             let value_str = format!("{}", bar.total as u64);
@@ -527,8 +651,7 @@ fn render_histogram_stacked(
             }
         }
 
-        // Fee label.
-        let label = format_fee_label(bar.lo, bar.hi, unit);
+        let label = format_bucket_label(bar.lo, bar.hi, chart_mode);
         let label = truncate_to(&label, bar_w as usize);
         if label_row < buf.area.y + buf.area.height {
             for (j, ch) in label.chars().enumerate() {
@@ -539,6 +662,14 @@ fn render_histogram_stacked(
                 }
             }
         }
+    }
+}
+
+fn hist_title_prefix(mode: ChartMode) -> &'static str {
+    match mode {
+        ChartMode::TxCount => "base fee",
+        ChartMode::GasUsed => "gas",
+        ChartMode::DaSize => "DA",
     }
 }
 
@@ -578,25 +709,56 @@ fn rebucket(raw: &[(f64, f64)], max_buckets: usize) -> Vec<(f64, f64, f64)> {
     merged
 }
 
-/// Build a base-fee histogram from a block series by looking up each block's fee.
-fn build_fee_histogram(
-    block_series: &[(f64, f64)],
-    base_fee_lookup: &HashMap<u64, f64>,
-) -> Vec<(f64, f64)> {
-    let mut hist: Vec<(f64, f64)> = Vec::new();
-    for &(block, tx_count) in block_series {
-        if tx_count <= 0.0 {
-            continue;
-        }
-        if let Some(&fee) = base_fee_lookup.get(&(block as u64)) {
-            let bucket = (fee * 1000.0).floor() / 1000.0;
-            if let Some((_, count)) = hist.iter_mut().find(|(b, _)| (*b - bucket).abs() < 1e-9) {
-                *count += tx_count;
-            } else {
-                hist.push((bucket, tx_count));
-            }
-        }
+fn rebucket_uniform(raw: &[(f64, f64)], max_buckets: usize) -> Vec<(f64, f64, f64)> {
+    if raw.is_empty() {
+        return Vec::new();
     }
-    hist.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    hist
+    let mut sorted: Vec<(f64, f64)> = raw.to_vec();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let lo = sorted.first().unwrap().0;
+    let hi = sorted.last().unwrap().0;
+
+    if (hi - lo).abs() < f64::EPSILON || max_buckets <= 1 {
+        let total: f64 = sorted.iter().map(|(_, c)| *c).sum();
+        return vec![(lo, hi, total)];
+    }
+
+    let target = max_buckets.max(1);
+    let width = (hi - lo) / target as f64;
+
+    let mut merged: Vec<(f64, f64, f64)> = Vec::with_capacity(target);
+    for i in 0..target {
+        let b_lo = lo + i as f64 * width;
+        let b_hi = if i == target - 1 {
+            hi
+        } else {
+            lo + (i + 1) as f64 * width
+        };
+        merged.push((b_lo, b_hi, 0.0));
+    }
+
+    for &(val, count) in &sorted {
+        let idx = if width > 0.0 {
+            ((val - lo) / width).floor() as usize
+        } else {
+            0
+        };
+        let idx = idx.min(target - 1);
+        merged[idx].2 += count;
+    }
+
+    merged.retain(|&(_, _, c)| c > 0.0);
+    merged
+}
+
+fn smart_rebucket(
+    raw: &[(f64, f64)],
+    max_buckets: usize,
+    mode: ChartMode,
+) -> Vec<(f64, f64, f64)> {
+    match mode {
+        ChartMode::TxCount => rebucket(raw, max_buckets),
+        ChartMode::GasUsed | ChartMode::DaSize => rebucket_uniform(raw, max_buckets),
+    }
 }

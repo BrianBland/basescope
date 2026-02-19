@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use crate::analysis::Analyzer;
 use crate::cache::Cache;
-use crate::domain::{ScanSpec, TxFilter, parse_filter};
+use crate::domain::{ChartMode, ScanSpec, TxFilter, parse_filter};
 use crate::pipeline::{Pipeline, PipelineEvent};
 use crate::rpc::RpcClient;
 use crate::tui::events::{poll_event, AppEvent};
@@ -177,6 +177,7 @@ pub struct ViewState {
     pub granularity: Granularity,
     pub hist_mode: HistogramMode,
     pub scale_mode: ScaleMode,
+    pub chart_mode: ChartMode,
     pub show_help: bool,
 }
 
@@ -232,6 +233,7 @@ impl App {
                 granularity: Granularity::Auto,
                 hist_mode: HistogramMode::FilterMatches,
                 scale_mode: ScaleMode::Linear,
+                chart_mode: ChartMode::TxCount,
                 show_help: false,
             },
             filters: Vec::new(),
@@ -391,6 +393,10 @@ impl App {
                 }
                 KeyCode::Char('s') => {
                     self.view.scale_mode = self.view.scale_mode.next();
+                    return Ok(());
+                }
+                KeyCode::Char('t') => {
+                    self.view.chart_mode = self.view.chart_mode.next();
                     return Ok(());
                 }
                 KeyCode::Char('a') => {

@@ -142,6 +142,7 @@ fn help_lines(mode: AppMode) -> Vec<Line<'static>> {
             entries.push(("G", "set granularity"));
             entries.push(("h", "switch histogram"));
             entries.push(("s", "cycle scale mode"));
+            entries.push(("t", "cycle chart type"));
             entries.push(("l", "toggle logs"));
             entries.push(("r", "toggle rpc info"));
             entries.push(("mouse", "crosshair"));

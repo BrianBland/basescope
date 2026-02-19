@@ -5,7 +5,7 @@ use ratatui::prelude::Frame;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph};
 
-use crate::domain::{BASE_BLOCK_TIME_SECS, BASE_GENESIS_TIMESTAMP};
+use crate::domain::{ChartMode, BASE_BLOCK_TIME_SECS, BASE_GENESIS_TIMESTAMP};
 use crate::tui::App;
 
 use super::colors::{blend_colors, filter_color, filter_rgb};
@@ -17,18 +17,47 @@ use super::{
     x_axis_labels, y_labels_int, FilterEntry, FilterSeries,
 };
 
-pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .horizontal_margin(1)
-        .vertical_margin(0)
-        .constraints([
-            Constraint::Percentage(40),
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-        ])
-        .split(area);
+fn format_bytes(bytes: f64) -> String {
+    if bytes >= 1_000_000.0 {
+        format!("{:.1}MB", bytes / 1_000_000.0)
+    } else if bytes >= 1_000.0 {
+        format!("{:.0}KB", bytes / 1_000.0)
+    } else {
+        format!("{:.0}B", bytes)
+    }
+}
 
+fn format_gas(gas: f64) -> String {
+    if gas >= 1_000_000_000.0 {
+        format!("{:.1}Bgas", gas / 1_000_000_000.0)
+    } else if gas >= 1_000_000.0 {
+        format!("{:.1}Mgas", gas / 1_000_000.0)
+    } else if gas >= 1_000.0 {
+        format!("{:.0}Kgas", gas / 1_000.0)
+    } else {
+        format!("{:.0}gas", gas)
+    }
+}
+
+fn format_mid_value(value: f64, mode: ChartMode) -> String {
+    match mode {
+        ChartMode::TxCount => format_fee_value(value),
+        ChartMode::GasUsed => format_gas(value),
+        ChartMode::DaSize => format_bytes(value),
+    }
+}
+
+fn mid_y_labels(y_min: f64, y_max: f64, mode: ChartMode) -> Vec<String> {
+    let mid = (y_min + y_max) / 2.0;
+    let q1 = (y_min + mid) / 2.0;
+    let q3 = (mid + y_max) / 2.0;
+    [y_min, q1, mid, q3, y_max]
+        .iter()
+        .map(|v| format_mid_value(*v, mode))
+        .collect()
+}
+
+pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let snapshot = match &app.snapshot {
         Some(snapshot) => snapshot,
         None => {
@@ -39,39 +68,81 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         }
     };
 
-    app.view.tx_chart_rect.set(layout[0]);
-    app.view.bf_chart_rect.set(layout[1]);
+    let chart_mode = app.view.chart_mode;
+    let any_filter_enabled = snapshot.filters.iter().any(|f| f.enabled);
 
-    let (full_x_min, full_x_max) = series_x_bounds(&snapshot.base_fee_series);
+    let (tx_area, bf_area, bottom_area) = if any_filter_enabled {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .horizontal_margin(1)
+            .vertical_margin(0)
+            .constraints([
+                Constraint::Percentage(40),
+                Constraint::Percentage(30),
+                Constraint::Percentage(30),
+            ])
+            .split(area);
+        (Some(layout[0]), layout[1], layout[2])
+    } else {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .horizontal_margin(1)
+            .vertical_margin(0)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(area);
+        (None, layout[0], layout[1])
+    };
+
+    if let Some(tx_rect) = tx_area {
+        app.view.tx_chart_rect.set(tx_rect);
+    } else {
+        app.view.tx_chart_rect.set(Rect::default());
+    }
+    app.view.bf_chart_rect.set(bf_area);
+
+    let block_series = snapshot.block_series_for(chart_mode);
+    let (full_x_min, full_x_max) = series_x_bounds(block_series);
     app.view.full_x_range.set((full_x_min, full_x_max));
     let x_min = app.view.view_start.unwrap_or(full_x_min);
     let x_max = app.view.view_end.unwrap_or(full_x_max);
     let visible_range = (x_max - x_min).max(1.0) as usize;
-    app.view.auto_granularity
+    app.view
+        .auto_granularity
         .set(crate::tui::auto_granularity(visible_range));
     let g = app.effective_granularity();
-    let x_labels = x_axis_labels(x_min, x_max, layout[0].width.saturating_sub(8) as usize);
+    let ref_rect = tx_area.unwrap_or(bf_area);
+    let x_labels = x_axis_labels(x_min, x_max, ref_rect.width.saturating_sub(8) as usize);
 
     let grouped_filter_series: FilterSeries = snapshot
         .filters
         .iter()
         .filter(|f| f.enabled)
         .filter_map(|f| {
-            snapshot.filter_series.get(&f.id).map(|series| {
+            snapshot.filter_series_for(chart_mode, &f.id).map(|series| {
                 let visible = filter_visible(series, x_min, x_max);
                 (f.label.clone(), f.color_index, group_series_sum(visible, g))
             })
         })
         .collect();
 
-    let visible_base_fee = filter_visible(&snapshot.base_fee_series, x_min, x_max);
-    let grouped_base_fee = group_series_avg(visible_base_fee, g);
-    let scale = app.view.scale_mode.build_transform(&grouped_base_fee);
-    let scaled_base_fee: Vec<(f64, f64)> = grouped_base_fee
+    let visible_mid = filter_visible(block_series, x_min, x_max);
+    let grouped_mid = match chart_mode {
+        ChartMode::TxCount => group_series_avg(visible_mid, g),
+        ChartMode::GasUsed | ChartMode::DaSize => group_series_sum(visible_mid, g),
+    };
+
+    let use_scale = chart_mode == ChartMode::TxCount;
+    let scale = if use_scale {
+        app.view.scale_mode.build_transform(&grouped_mid)
+    } else {
+        crate::tui::ScaleMode::Linear.build_transform(&grouped_mid)
+    };
+
+    let scaled_mid: Vec<(f64, f64)> = grouped_mid
         .iter()
         .map(|(x, y)| (*x, scale.apply(*y)))
         .collect();
-    let (by_min, by_max) = series_y_bounds(&[&scaled_base_fee]);
+    let (by_min, by_max) = series_y_bounds(&[&scaled_mid]);
 
     let tx_series_refs: Vec<&[(f64, f64)]> = grouped_filter_series
         .iter()
@@ -83,7 +154,7 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let original_by_min = scale.invert(by_min);
     let y_label_w = by_labels_width(original_by_min, original_by_max);
     app.view.last_y_label_w.set(y_label_w);
-    let graph_w_chars = chart_inner(layout[0], y_label_w).width as f64;
+    let graph_w_chars = chart_inner(ref_rect, y_label_w).width as f64;
     let x_range = x_max - x_min;
     let cell_w = if graph_w_chars > 0.0 && x_range > 0.0 {
         x_range / graph_w_chars
@@ -93,8 +164,8 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
 
     let crosshair = compute_crosshair(
         app,
-        layout[0],
-        layout[1],
+        tx_area,
+        bf_area,
         x_min,
         x_max,
         ty_min,
@@ -102,77 +173,85 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         by_min,
         by_max,
         y_label_w,
-        &grouped_base_fee,
+        &grouped_mid,
     );
-    let scaled_crosshair_y = crosshair.as_ref().map(|ch| scale.apply(ch.base_fee_y));
+    let scaled_crosshair_y = crosshair.as_ref().map(|ch| scale.apply(ch.mid_y));
 
     let gran_suffix = app.granularity_label();
 
-    let tx_title = match &crosshair {
-        Some(ch) => {
-            let fee_str = format_fee_value(ch.base_fee_y);
-            format!(
-                "tx count per block{gran_suffix}  │  blk {:.0}  fee {fee_str}",
-                ch.data_x
+    if let Some(tx_rect) = tx_area {
+        let tx_title = match &crosshair {
+            Some(ch) => {
+                let mid_str = format_mid_value(ch.mid_y, chart_mode);
+                format!(
+                    "{} per block{gran_suffix}  │  blk {:.0}  {} {mid_str}",
+                    chart_mode.top_title(),
+                    ch.data_x,
+                    chart_mode.mid_title(),
+                )
+            }
+            None => format!("{} per block{gran_suffix}", chart_mode.top_title()),
+        };
+
+        let tx_graph_h = chart_inner(tx_rect, y_label_w).height as f64;
+        let ty_range = ty_max - ty_min;
+        let cell_h = if tx_graph_h > 0.0 && ty_range > 0.0 {
+            ty_range / tx_graph_h
+        } else {
+            1.0
+        };
+        let tx_overlay = build_tx_overlays(&grouped_filter_series, x_min, cell_w, ty_min, cell_h);
+        let tx_datasets: Vec<Dataset<'_>> = tx_overlay
+            .iter()
+            .map(|(color, data)| {
+                Dataset::default()
+                    .marker(ratatui::symbols::Marker::Braille)
+                    .graph_type(GraphType::Scatter)
+                    .style(Style::default().fg(*color))
+                    .data(data)
+            })
+            .collect();
+        let ty_labels = y_labels_int(ty_min, ty_max);
+
+        let tx_chart = Chart::new(tx_datasets)
+            .block(Block::default().title(tx_title).borders(Borders::ALL))
+            .x_axis(
+                Axis::default()
+                    .bounds([x_min, x_max])
+                    .title("block")
+                    .labels(x_labels.clone()),
             )
-        }
-        None => format!("tx count per block{gran_suffix}"),
-    };
+            .y_axis(
+                Axis::default()
+                    .bounds([ty_min, ty_max])
+                    .title(chart_mode.y_axis_label())
+                    .labels(ty_labels),
+            );
+        frame.render_widget(tx_chart, tx_rect);
+    }
 
-    let tx_graph_h = chart_inner(layout[0], y_label_w).height as f64;
-    let ty_range = ty_max - ty_min;
-    let cell_h = if tx_graph_h > 0.0 && ty_range > 0.0 {
-        ty_range / tx_graph_h
+    let by_labels = if use_scale {
+        scaled_y_labels_gwei(by_min, by_max, &scale)
     } else {
-        1.0
+        mid_y_labels(by_min, by_max, chart_mode)
     };
-    let tx_overlay = build_tx_overlays(&grouped_filter_series, x_min, cell_w, ty_min, cell_h);
-    let tx_datasets: Vec<Dataset<'_>> = tx_overlay
-        .iter()
-        .map(|(color, data)| {
-            Dataset::default()
-                .marker(ratatui::symbols::Marker::Braille)
-                .graph_type(GraphType::Scatter)
-                .style(Style::default().fg(*color))
-                .data(data)
-        })
-        .collect();
-    let ty_labels = y_labels_int(ty_min, ty_max);
 
-    let tx_chart = Chart::new(tx_datasets)
-        .block(Block::default().title(tx_title).borders(Borders::ALL))
-        .x_axis(
-            Axis::default()
-                .bounds([x_min, x_max])
-                .title("block")
-                .labels(x_labels.clone()),
-        )
-        .y_axis(
-            Axis::default()
-                .bounds([ty_min, ty_max])
-                .title("txs")
-                .labels(ty_labels),
-        );
-    frame.render_widget(tx_chart, layout[0]);
-
-    let by_labels = scaled_y_labels_gwei(by_min, by_max, &scale);
-
-    let scaled_base_fee_by_x: HashMap<u64, f64> = scaled_base_fee
+    let scaled_mid_by_x: HashMap<u64, f64> = scaled_mid
         .iter()
         .map(|(x, y)| (*x as u64, *y))
         .collect();
 
     let overlay_series =
-        build_base_fee_overlays(&grouped_filter_series, &scaled_base_fee_by_x, x_min, cell_w);
+        build_mid_overlays(&grouped_filter_series, &scaled_mid_by_x, x_min, cell_w);
 
-    let base_fee_dataset = Dataset::default()
-        .name("base fee")
+    let mid_dataset = Dataset::default()
+        .name(chart_mode.mid_title())
         .marker(ratatui::symbols::Marker::Braille)
         .graph_type(GraphType::Line)
         .style(Style::default().fg(Color::DarkGray))
-        .data(&scaled_base_fee);
+        .data(&scaled_mid);
 
-    let mut bf_datasets = vec![base_fee_dataset];
+    let mut bf_datasets = vec![mid_dataset];
     for (color, series) in &overlay_series {
         bf_datasets.push(
             Dataset::default()
@@ -183,11 +262,18 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         );
     }
 
-    let scale_suffix = app.view.scale_mode.label();
-    let base_fee_chart = Chart::new(bf_datasets)
+    let scale_suffix = if use_scale {
+        app.view.scale_mode.label()
+    } else {
+        ""
+    };
+    let mid_chart = Chart::new(bf_datasets)
         .block(
             Block::default()
-                .title(format!("base fee{gran_suffix}{scale_suffix}"))
+                .title(format!(
+                    "{}{gran_suffix}{scale_suffix}",
+                    chart_mode.mid_title()
+                ))
                 .borders(Borders::ALL),
         )
         .x_axis(
@@ -199,24 +285,26 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         .y_axis(
             Axis::default()
                 .bounds([by_min, by_max])
-                .title("fee")
+                .title(chart_mode.y_axis_label())
                 .labels(by_labels),
         );
-    frame.render_widget(base_fee_chart, layout[1]);
+    frame.render_widget(mid_chart, bf_area);
 
-    let tx_inner = chart_inner(layout[0], y_label_w);
-    let bf_inner = chart_inner(layout[1], y_label_w);
-    paint_time_of_day_bg(frame, tx_inner, x_min, x_max);
+    if let Some(tx_rect) = tx_area {
+        let tx_inner = chart_inner(tx_rect, y_label_w);
+        paint_time_of_day_bg(frame, tx_inner, x_min, x_max);
+    }
+    let bf_inner = chart_inner(bf_area, y_label_w);
     paint_time_of_day_bg(frame, bf_inner, x_min, x_max);
 
     if let Some(ch) = &crosshair {
-        let scaled_fee_y = scaled_crosshair_y.unwrap_or(0.0);
+        let scaled_mid_y = scaled_crosshair_y.unwrap_or(0.0);
         draw_crosshair_highlight(
             frame,
             ch.data_x,
-            scaled_fee_y,
-            layout[0],
-            layout[1],
+            scaled_mid_y,
+            tx_area,
+            bf_area,
             x_min,
             x_max,
             by_min,
@@ -228,20 +316,20 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let bottom = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(layout[2]);
+        .split(bottom_area);
     render_histogram(app, snapshot, frame, bottom[0], x_min, x_max);
     render_sidebar(app, snapshot, frame, bottom[1]);
 }
 
 struct Crosshair {
     data_x: f64,
-    base_fee_y: f64,
+    mid_y: f64,
 }
 
 #[allow(clippy::too_many_arguments)]
 fn compute_crosshair(
     app: &App,
-    tx_rect: Rect,
+    tx_area: Option<Rect>,
     bf_rect: Rect,
     x_min: f64,
     x_max: f64,
@@ -250,15 +338,17 @@ fn compute_crosshair(
     _by_min: f64,
     _by_max: f64,
     y_label_w: u16,
-    grouped_base_fee: &[(f64, f64)],
+    grouped_mid: &[(f64, f64)],
 ) -> Option<Crosshair> {
     let col = app.view.mouse_col;
     let row = app.view.mouse_row;
 
-    let in_tx = col >= tx_rect.x
-        && col < tx_rect.x + tx_rect.width
-        && row >= tx_rect.y
-        && row < tx_rect.y + tx_rect.height;
+    let in_tx = tx_area.is_some_and(|tx_rect| {
+        col >= tx_rect.x
+            && col < tx_rect.x + tx_rect.width
+            && row >= tx_rect.y
+            && row < tx_rect.y + tx_rect.height
+    });
     let in_bf = col >= bf_rect.x
         && col < bf_rect.x + bf_rect.width
         && row >= bf_rect.y
@@ -268,7 +358,11 @@ fn compute_crosshair(
         return None;
     }
 
-    let chart_rect = if in_tx { tx_rect } else { bf_rect };
+    let chart_rect = if in_tx {
+        tx_area.unwrap()
+    } else {
+        bf_rect
+    };
     let inner = chart_inner(chart_rect, y_label_w);
 
     if col < inner.x || col >= inner.x + inner.width || inner.width == 0 {
@@ -280,9 +374,9 @@ fn compute_crosshair(
     let frac = frac.clamp(0.0, 1.0);
     let data_x = x_min + frac * (x_max - x_min);
 
-    let base_fee_y = nearest_y(grouped_base_fee, data_x);
+    let mid_y = nearest_y(grouped_mid, data_x);
 
-    Some(Crosshair { data_x, base_fee_y })
+    Some(Crosshair { data_x, mid_y })
 }
 
 fn data_to_col(data_x: f64, x_min: f64, x_max: f64, inner: Rect) -> Option<u16> {
@@ -379,8 +473,8 @@ fn highlight_cell(buf: &mut ratatui::buffer::Buffer, col: u16, row: u16, bg: Col
 fn draw_crosshair_highlight(
     frame: &mut Frame,
     data_x: f64,
-    scaled_fee_y: f64,
-    tx_rect: Rect,
+    scaled_mid_y: f64,
+    tx_area: Option<Rect>,
     bf_rect: Rect,
     x_min: f64,
     x_max: f64,
@@ -388,18 +482,18 @@ fn draw_crosshair_highlight(
     by_max: f64,
     y_label_w: u16,
 ) {
-    let tx_inner = chart_inner(tx_rect, y_label_w);
     let bf_inner = chart_inner(bf_rect, y_label_w);
-
-    let tx_col = data_to_col(data_x, x_min, x_max, tx_inner);
     let bf_col = data_to_col(data_x, x_min, x_max, bf_inner);
-    let bf_row = data_to_row(scaled_fee_y, by_min, by_max, bf_inner);
+    let bf_row = data_to_row(scaled_mid_y, by_min, by_max, bf_inner);
 
     let buf = frame.buffer_mut();
 
-    if let Some(col) = tx_col {
-        for row in tx_inner.y..tx_inner.y + tx_inner.height {
-            highlight_cell(buf, col, row, CROSSHAIR_BG);
+    if let Some(tx_rect) = tx_area {
+        let tx_inner = chart_inner(tx_rect, y_label_w);
+        if let Some(col) = data_to_col(data_x, x_min, x_max, tx_inner) {
+            for row in tx_inner.y..tx_inner.y + tx_inner.height {
+                highlight_cell(buf, col, row, CROSSHAIR_BG);
+            }
         }
     }
 
@@ -493,13 +587,12 @@ fn build_tx_overlays(
     result
 }
 
-fn build_base_fee_overlays(
+fn build_mid_overlays(
     grouped_filter_series: &[FilterEntry],
-    base_fee_by_x: &HashMap<u64, f64>,
+    mid_by_x: &HashMap<u64, f64>,
     x_min: f64,
     cell_w: f64,
 ) -> Vec<(Color, Vec<(f64, f64)>)> {
-    // Build cell → sorted filter indices mapping.
     let mut cell_filters: HashMap<i64, Vec<usize>> = HashMap::new();
     for (i, (_label, _color_idx, series)) in grouped_filter_series.iter().enumerate() {
         for &(x, y) in series {
@@ -512,28 +605,25 @@ fn build_base_fee_overlays(
             }
         }
     }
-    // Pre-sort and dedup each cell's indices once.
     for indices in cell_filters.values_mut() {
         indices.sort();
         indices.dedup();
     }
 
-    // Pre-compute color for each cell.
     let cell_colors: HashMap<i64, Color> = cell_filters
         .iter()
         .map(|(cx, indices)| (*cx, cell_color(indices, grouped_filter_series)))
         .collect();
 
-    // Assign each data point its cell's pre-computed color.
     let mut color_buckets: HashMap<Color, Vec<(f64, f64)>> = HashMap::new();
     for (_label, _color_idx, series) in grouped_filter_series {
         for &(x, y) in series {
             if y > 0.0 {
                 let cx = quantize(x, x_min, cell_w);
                 if let Some(&color) = cell_colors.get(&cx)
-                    && let Some(&base_fee) = base_fee_by_x.get(&(x as u64))
+                    && let Some(&mid_val) = mid_by_x.get(&(x as u64))
                 {
-                    color_buckets.entry(color).or_default().push((x, base_fee));
+                    color_buckets.entry(color).or_default().push((x, mid_val));
                 }
             }
         }
