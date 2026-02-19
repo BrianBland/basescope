@@ -45,19 +45,19 @@ impl Analyzer {
                 .base_fee_series
                 .push((block_number as f64, base_fee_gwei));
 
-            // Compute per-block totals for gas and DA.
+            // Compute per-block totals for gas and tx size.
             let block_gas: u64 = block.transactions.iter().map(|tx| tx.gas_used).sum();
-            let block_da: u64 = block.transactions.iter().map(|tx| tx.rlp_size).sum();
+            let block_tx_size: u64 = block.transactions.iter().map(|tx| tx.rlp_size).sum();
             self.snapshot
                 .block_gas_series
                 .push((block_number as f64, block_gas as f64));
             self.snapshot
-                .block_da_series
-                .push((block_number as f64, block_da as f64));
+                .block_tx_size_series
+                .push((block_number as f64, block_tx_size as f64));
 
             let mut aggregate_hashes: HashSet<[u8; 32]> = HashSet::new();
             let mut aggregate_gas: u64 = 0;
-            let mut aggregate_da: u64 = 0;
+            let mut aggregate_tx_size: u64 = 0;
 
             for filter in &self.snapshot.filters {
                 let Some(entry) = self.matches_by_filter.get_mut(&filter.id) else {
@@ -65,14 +65,14 @@ impl Analyzer {
                 };
                 let mut matches = Vec::new();
                 let mut filter_gas: u64 = 0;
-                let mut filter_da: u64 = 0;
+                let mut filter_tx_size: u64 = 0;
                 for tx in &block.transactions {
                     if filter.kind.matches(tx.sender(), tx.to_addr()) {
                         filter_gas += tx.gas_used;
-                        filter_da += tx.rlp_size;
+                        filter_tx_size += tx.rlp_size;
                         if filter.enabled && aggregate_hashes.insert(tx.hash) {
                             aggregate_gas += tx.gas_used;
-                            aggregate_da += tx.rlp_size;
+                            aggregate_tx_size += tx.rlp_size;
                         }
                         matches.push(MatchedTx {
                             hash: tx.hash,
@@ -89,8 +89,8 @@ impl Analyzer {
                 if let Some(series) = self.snapshot.gas_series.get_mut(&filter.id) {
                     series.push((block_number as f64, filter_gas as f64));
                 }
-                if let Some(series) = self.snapshot.da_series.get_mut(&filter.id) {
-                    series.push((block_number as f64, filter_da as f64));
+                if let Some(series) = self.snapshot.tx_size_series.get_mut(&filter.id) {
+                    series.push((block_number as f64, filter_tx_size as f64));
                 }
             }
 
@@ -102,8 +102,8 @@ impl Analyzer {
                 .aggregate_gas_series
                 .push((block_number as f64, aggregate_gas as f64));
             self.snapshot
-                .aggregate_da_series
-                .push((block_number as f64, aggregate_da as f64));
+                .aggregate_tx_size_series
+                .push((block_number as f64, aggregate_tx_size as f64));
             self.snapshot.blocks_fetched += 1;
         }
         self.cached = None;
@@ -134,7 +134,7 @@ impl Analyzer {
     fn recompute_aggregate(&mut self) {
         self.snapshot.aggregate_series.clear();
         self.snapshot.aggregate_gas_series.clear();
-        self.snapshot.aggregate_da_series.clear();
+        self.snapshot.aggregate_tx_size_series.clear();
 
         let enabled_filters: Vec<FilterId> = self
             .snapshot
@@ -147,7 +147,7 @@ impl Analyzer {
         for block_number in &self.block_order {
             let mut aggregate_hashes: HashSet<[u8; 32]> = HashSet::new();
             let mut aggregate_gas: u64 = 0;
-            let mut aggregate_da: u64 = 0;
+            let mut aggregate_tx_size: u64 = 0;
 
             for filter_id in &enabled_filters {
                 if let Some(matches) = self
@@ -158,7 +158,7 @@ impl Analyzer {
                     for mtx in matches {
                         if aggregate_hashes.insert(mtx.hash) {
                             aggregate_gas += mtx.gas_used;
-                            aggregate_da += mtx.rlp_size;
+                            aggregate_tx_size += mtx.rlp_size;
                         }
                     }
                 }
@@ -172,8 +172,8 @@ impl Analyzer {
                 .aggregate_gas_series
                 .push((*block_number as f64, aggregate_gas as f64));
             self.snapshot
-                .aggregate_da_series
-                .push((*block_number as f64, aggregate_da as f64));
+                .aggregate_tx_size_series
+                .push((*block_number as f64, aggregate_tx_size as f64));
         }
     }
 }

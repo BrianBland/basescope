@@ -20,7 +20,7 @@ type HistSlices<'a> = Vec<(&'a str, usize, &'a [(f64, f64)])>;
 fn bucket_precision(mode: ChartMode) -> f64 {
     match mode {
         ChartMode::TxCount => 1000.0,
-        ChartMode::GasUsed | ChartMode::DaSize => 1.0,
+        ChartMode::GasUsed | ChartMode::TxSize => 1.0,
     }
 }
 
@@ -69,7 +69,7 @@ fn format_bucket_label(lo: f64, hi: f64, mode: ChartMode) -> String {
                 format!("{}-{}", format_si(lo), format_si(hi))
             }
         }
-        ChartMode::DaSize => {
+        ChartMode::TxSize => {
             if (hi - lo).abs() < 1.0 {
                 format_si_bytes(lo)
             } else {
@@ -322,7 +322,7 @@ fn render_histogram_all_blocks(
     let source: &[(f64, f64)] = if g > 1 {
         grouped = match chart_mode {
             ChartMode::TxCount => group_series_avg(visible, g),
-            ChartMode::GasUsed | ChartMode::DaSize => group_series_sum(visible, g),
+            ChartMode::GasUsed | ChartMode::TxSize => group_series_sum(visible, g),
         };
         &grouped
     } else {
@@ -458,7 +458,7 @@ fn render_histogram_stacked(
                     let avg = chunk.iter().map(|(_, f)| f).sum::<f64>() / chunk.len() as f64;
                     (avg * bucket_precision(chart_mode)).floor() / bucket_precision(chart_mode)
                 }
-                ChartMode::GasUsed | ChartMode::DaSize => {
+                ChartMode::GasUsed | ChartMode::TxSize => {
                     let sum = chunk.iter().map(|(_, f)| f).sum::<f64>();
                     (sum * bucket_precision(chart_mode)).floor() / bucket_precision(chart_mode)
                 }
@@ -668,7 +668,7 @@ fn hist_title_prefix(mode: ChartMode) -> &'static str {
     match mode {
         ChartMode::TxCount => "base fee",
         ChartMode::GasUsed => "gas",
-        ChartMode::DaSize => "DA",
+        ChartMode::TxSize => "bytes",
     }
 }
 
@@ -758,6 +758,6 @@ fn smart_rebucket(
 ) -> Vec<(f64, f64, f64)> {
     match mode {
         ChartMode::TxCount => rebucket(raw, max_buckets),
-        ChartMode::GasUsed | ChartMode::DaSize => rebucket_uniform(raw, max_buckets),
+        ChartMode::GasUsed | ChartMode::TxSize => rebucket_uniform(raw, max_buckets),
     }
 }

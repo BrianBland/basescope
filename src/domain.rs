@@ -305,15 +305,15 @@ impl TryFrom<ColumnarChunkData> for ChunkData {
 pub enum ChartMode {
     TxCount,
     GasUsed,
-    DaSize,
+    TxSize,
 }
 
 impl ChartMode {
     pub fn next(self) -> Self {
         match self {
             ChartMode::TxCount => ChartMode::GasUsed,
-            ChartMode::GasUsed => ChartMode::DaSize,
-            ChartMode::DaSize => ChartMode::TxCount,
+            ChartMode::GasUsed => ChartMode::TxSize,
+            ChartMode::TxSize => ChartMode::TxCount,
         }
     }
 
@@ -321,7 +321,7 @@ impl ChartMode {
         match self {
             ChartMode::TxCount => "tx count",
             ChartMode::GasUsed => "gas used",
-            ChartMode::DaSize => "DA bytes",
+            ChartMode::TxSize => "tx size",
         }
     }
 
@@ -329,7 +329,7 @@ impl ChartMode {
         match self {
             ChartMode::TxCount => "base fee",
             ChartMode::GasUsed => "gas per block",
-            ChartMode::DaSize => "DA per block",
+            ChartMode::TxSize => "bytes per block",
         }
     }
 
@@ -337,7 +337,7 @@ impl ChartMode {
         match self {
             ChartMode::TxCount => "txs",
             ChartMode::GasUsed => "gas",
-            ChartMode::DaSize => "bytes",
+            ChartMode::TxSize => "bytes",
         }
     }
 }
@@ -347,15 +347,15 @@ pub struct AnalysisSnapshot {
     /// (block_number, matching_tx_count) per filter.
     pub filter_series: HashMap<FilterId, Vec<(f64, f64)>>,
     pub gas_series: HashMap<FilterId, Vec<(f64, f64)>>,
-    pub da_series: HashMap<FilterId, Vec<(f64, f64)>>,
+    pub tx_size_series: HashMap<FilterId, Vec<(f64, f64)>>,
     /// (block_number, base_fee_gwei) for all blocks — the bottom chart.
     pub base_fee_series: Vec<(f64, f64)>,
     pub block_gas_series: Vec<(f64, f64)>,
-    pub block_da_series: Vec<(f64, f64)>,
+    pub block_tx_size_series: Vec<(f64, f64)>,
     /// Union of all enabled filters: (block_number, matching_tx_count).
     pub aggregate_series: Vec<(f64, f64)>,
     pub aggregate_gas_series: Vec<(f64, f64)>,
-    pub aggregate_da_series: Vec<(f64, f64)>,
+    pub aggregate_tx_size_series: Vec<(f64, f64)>,
     pub blocks_fetched: usize,
     pub filters: Vec<TxFilter>,
     pub show_aggregate: bool,
@@ -365,22 +365,22 @@ impl AnalysisSnapshot {
     pub fn new(filters: &[TxFilter]) -> Self {
         let mut filter_series = HashMap::new();
         let mut gas_series = HashMap::new();
-        let mut da_series = HashMap::new();
+        let mut tx_size_series = HashMap::new();
         for f in filters {
             filter_series.insert(f.id, Vec::new());
             gas_series.insert(f.id, Vec::new());
-            da_series.insert(f.id, Vec::new());
+            tx_size_series.insert(f.id, Vec::new());
         }
         Self {
             filter_series,
             gas_series,
-            da_series,
+            tx_size_series,
             base_fee_series: Vec::new(),
             block_gas_series: Vec::new(),
-            block_da_series: Vec::new(),
+            block_tx_size_series: Vec::new(),
             aggregate_series: Vec::new(),
             aggregate_gas_series: Vec::new(),
-            aggregate_da_series: Vec::new(),
+            aggregate_tx_size_series: Vec::new(),
             blocks_fetched: 0,
             filters: filters.to_vec(),
             show_aggregate: false,
@@ -391,7 +391,7 @@ impl AnalysisSnapshot {
         match mode {
             ChartMode::TxCount => self.filter_series.get(id),
             ChartMode::GasUsed => self.gas_series.get(id),
-            ChartMode::DaSize => self.da_series.get(id),
+            ChartMode::TxSize => self.tx_size_series.get(id),
         }
     }
 
@@ -399,7 +399,7 @@ impl AnalysisSnapshot {
         match mode {
             ChartMode::TxCount => &self.aggregate_series,
             ChartMode::GasUsed => &self.aggregate_gas_series,
-            ChartMode::DaSize => &self.aggregate_da_series,
+            ChartMode::TxSize => &self.aggregate_tx_size_series,
         }
     }
 
@@ -407,7 +407,7 @@ impl AnalysisSnapshot {
         match mode {
             ChartMode::TxCount => &self.base_fee_series,
             ChartMode::GasUsed => &self.block_gas_series,
-            ChartMode::DaSize => &self.block_da_series,
+            ChartMode::TxSize => &self.block_tx_size_series,
         }
     }
 }
