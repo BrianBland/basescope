@@ -29,6 +29,12 @@ Or build from source:
 cargo build --release
 ```
 
+Chart export (PNG/SVG screenshots via `e` key) is enabled by default. To build without it:
+
+```
+cargo build --release --no-default-features
+```
+
 ## Usage
 
 ### Interactive
@@ -85,6 +91,7 @@ All CLI flags can be set via environment variables or a `.env` file:
 | `l` | Toggle log panel |
 | `r` | Toggle RPC info panel |
 | `c` / click | Copy hovered block number to clipboard |
+| `e` | Export chart to PNG/SVG (requires `export` feature) |
 | `z` / `Z` | Zoom in / out (centered on cursor) |
 | `←` / `→` | Pan left / right when zoomed |
 | `Home` | Reset zoom to full range |

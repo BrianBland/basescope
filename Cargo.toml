@@ -3,7 +3,12 @@ name = "basescope"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["export"]
+export = ["dep:plotters"]
+
 [dependencies]
+plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "svg_backend", "ttf", "line_series", "histogram"], optional = true }
 alloy = { version = "1", features = ["full"] }
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
