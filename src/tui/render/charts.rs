@@ -8,13 +8,13 @@ use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragrap
 use crate::domain::{ChartMode, BASE_BLOCK_TIME_SECS, BASE_GENESIS_TIMESTAMP};
 use crate::tui::App;
 
-use super::colors::{blend_colors, filter_color, filter_rgb};
+use super::colors::{blend_colors, filter_color, filter_rgb, lighten};
 use super::histogram::render_histogram;
 use super::sidebar::render_sidebar;
 use super::{
-    chart_inner, filter_visible, format_bytes, format_fee_value, format_gas, group_series_avg,
-    group_series_sum, nearest_point, nearest_y, scaled_y_labels_gwei, series_x_bounds,
-    series_y_bounds, x_axis_labels, y_labels_int, FilterEntry, FilterSeries,
+    chart_inner, compute_ema, filter_visible, format_bytes, format_fee_value, format_gas,
+    group_series_avg, group_series_sum, nearest_point, nearest_y, scaled_y_labels_gwei,
+    series_x_bounds, series_y_bounds, x_axis_labels, y_labels_int, FilterEntry, FilterSeries,
 };
 
 fn format_mid_value(value: f64, mode: ChartMode) -> String {
@@ -175,6 +175,11 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
 
     let gran_suffix = app.granularity_label();
 
+    let ema_suffix = match app.view.ema_span {
+        Some(span) => format!("  EMA({span})"),
+        None => String::new(),
+    };
+
     if let Some(tx_rect) = tx_area {
         let tx_title = match &crosshair {
             Some(ch) => {
@@ -182,13 +187,13 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
                 let top_y = nearest_y(&grouped_agg, ch.data_x);
                 let top_str = format_top_value(top_y, chart_mode);
                 format!(
-                    "{} per block{gran_suffix}  │  blk {:.0}  {top_str}  {} {mid_str}",
+                    "{} per block{gran_suffix}{ema_suffix}  │  blk {:.0}  {top_str}  {} {mid_str}",
                     chart_mode.top_title(),
                     ch.data_x,
                     chart_mode.mid_title(),
                 )
             }
-            None => format!("{} per block{gran_suffix}", chart_mode.top_title()),
+            None => format!("{} per block{gran_suffix}{ema_suffix}", chart_mode.top_title()),
         };
 
         let tx_graph_h = chart_inner(tx_rect, y_label_w, first_x_label_w).height as f64;
@@ -199,7 +204,24 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
             1.0
         };
         let tx_overlay = build_tx_overlays(&grouped_filter_series, x_min, cell_w, ty_min, cell_h);
-        let tx_datasets: Vec<Dataset<'_>> = tx_overlay
+
+        let ema_span = app.view.ema_span;
+        let ema_filter_series: Vec<Vec<(f64, f64)>> = if let Some(span) = ema_span {
+            grouped_filter_series
+                .iter()
+                .map(|(_, _, series)| compute_ema(series, span))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let ema_agg = if let Some(span) = ema_span {
+            compute_ema(&grouped_agg, span)
+        } else {
+            Vec::new()
+        };
+
+        // Scatter first, EMA lines on top.
+        let mut tx_datasets: Vec<Dataset<'_>> = tx_overlay
             .iter()
             .map(|(color, data)| {
                 Dataset::default()
@@ -209,6 +231,27 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
                     .data(data)
             })
             .collect();
+
+        if ema_span.is_some() {
+            for (i, ema) in ema_filter_series.iter().enumerate() {
+                let base = filter_color(grouped_filter_series[i].1);
+                tx_datasets.push(
+                    Dataset::default()
+                        .marker(ratatui::symbols::Marker::Braille)
+                        .graph_type(GraphType::Line)
+                        .style(Style::default().fg(lighten(base, 0.5)))
+                        .data(ema),
+                );
+            }
+            tx_datasets.push(
+                Dataset::default()
+                    .marker(ratatui::symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(lighten(Color::White, 0.5)))
+                    .data(&ema_agg),
+            );
+        }
+
         let ty_labels = y_labels_int(ty_min, ty_max);
 
         let tx_chart = Chart::new(tx_datasets)
@@ -236,10 +279,13 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let overlay_series =
         build_mid_overlays(&grouped_filter_series, &scaled_mid_by_x, x_min, cell_w);
 
+    let mid_graph_type = match chart_mode {
+        ChartMode::TxCount => GraphType::Line,
+        ChartMode::GasUsed | ChartMode::TxSize => GraphType::Scatter,
+    };
     let mid_dataset = Dataset::default()
-        .name(chart_mode.mid_title())
         .marker(ratatui::symbols::Marker::Braille)
-        .graph_type(GraphType::Line)
+        .graph_type(mid_graph_type)
         .style(Style::default().fg(Color::DarkGray))
         .data(&scaled_mid);
 

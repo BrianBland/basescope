@@ -58,6 +58,11 @@ pub fn render(app: &App, frame: &mut Frame) {
         panels::render_granularity_input(app, frame, outer);
     }
 
+    #[cfg(feature = "export")]
+    if app.input.export_step.is_some() {
+        panels::render_export_modal(app, frame, outer);
+    }
+
     if let Some((msg, _)) = &app.toast {
         let w = (msg.len() as u16 + 4).min(outer.width);
         let x = outer.x + outer.width.saturating_sub(w);
@@ -223,6 +228,21 @@ pub(super) fn group_series_sum(series: &[(f64, f64)], granularity: usize) -> Vec
             (x, y)
         })
         .collect()
+}
+
+pub(super) fn compute_ema(series: &[(f64, f64)], span: usize) -> Vec<(f64, f64)> {
+    if series.is_empty() || span == 0 {
+        return Vec::new();
+    }
+    let alpha = 2.0 / (span as f64 + 1.0);
+    let mut result = Vec::with_capacity(series.len());
+    let mut ema = series[0].1;
+    result.push((series[0].0, ema));
+    for &(x, y) in &series[1..] {
+        ema = alpha * y + (1.0 - alpha) * ema;
+        result.push((x, ema));
+    }
+    result
 }
 
 pub(super) fn group_series_avg(series: &[(f64, f64)], granularity: usize) -> Vec<(f64, f64)> {
@@ -465,6 +485,34 @@ mod tests {
         let series = vec![(1.0, 10.0), (10.0, 100.0)];
         // 6 is closer to 10 than to 1
         assert_eq!(nearest_y(&series, 6.0), 100.0);
+    }
+
+    #[test]
+    fn compute_ema_empty() {
+        assert!(compute_ema(&[], 20).is_empty());
+    }
+
+    #[test]
+    fn compute_ema_single() {
+        let series = vec![(1.0, 5.0)];
+        let result = compute_ema(&series, 20);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], (1.0, 5.0));
+    }
+
+    #[test]
+    fn compute_ema_smooths() {
+        let series: Vec<(f64, f64)> = (0..100)
+            .map(|i| {
+                let y = if i % 2 == 0 { 10.0 } else { 0.0 };
+                (i as f64, y)
+            })
+            .collect();
+        let result = compute_ema(&series, 20);
+        assert_eq!(result.len(), 100);
+        // EMA should converge toward 5.0 for alternating 0/10
+        let last = result.last().unwrap().1;
+        assert!((last - 5.0).abs() < 1.5);
     }
 
     #[test]

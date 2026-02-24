@@ -1,4 +1,6 @@
 pub mod events;
+#[cfg(feature = "export")]
+pub(crate) mod export;
 pub mod log_layer;
 pub mod render;
 
@@ -155,6 +157,13 @@ pub enum ChunkState {
     Failed,
 }
 
+#[cfg(feature = "export")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportStep {
+    ChartSelect,
+    FormatSelect(export::ExportChart),
+}
+
 pub struct InputState {
     pub range_field: RangeField,
     pub start_block_input: String,
@@ -162,6 +171,8 @@ pub struct InputState {
     pub current_filter_input: String,
     pub selected_filter: usize,
     pub granularity_input: Option<String>,
+    #[cfg(feature = "export")]
+    pub export_step: Option<ExportStep>,
 }
 
 pub struct ViewState {
@@ -180,6 +191,7 @@ pub struct ViewState {
     pub scale_mode: ScaleMode,
     pub chart_mode: ChartMode,
     pub show_help: bool,
+    pub ema_span: Option<usize>,
     pub hovered_block: Cell<Option<u64>>,
     pub first_x_label_w: Cell<u16>,
 }
@@ -222,6 +234,8 @@ impl App {
                 current_filter_input: String::new(),
                 selected_filter: 0,
                 granularity_input: None,
+                #[cfg(feature = "export")]
+                export_step: None,
             },
             view: ViewState {
                 mouse_col: 0,
@@ -239,6 +253,7 @@ impl App {
                 scale_mode: ScaleMode::Linear,
                 chart_mode: ChartMode::TxCount,
                 show_help: false,
+                ema_span: Some(20),
                 hovered_block: Cell::new(None),
                 first_x_label_w: Cell::new(0),
             },
@@ -345,6 +360,11 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        #[cfg(feature = "export")]
+        if self.input.export_step.is_some() {
+            return self.handle_export_input(key);
+        }
+
         if self.input.granularity_input.is_some() {
             return self.handle_granularity_input(key);
         }
@@ -411,8 +431,22 @@ impl App {
                     self.view.chart_mode = self.view.chart_mode.next();
                     return Ok(());
                 }
+                KeyCode::Char('m') => {
+                    self.view.ema_span = match self.view.ema_span {
+                        Some(20) => Some(50),
+                        Some(50) => Some(250),
+                        Some(250) => None,
+                        _ => Some(20),
+                    };
+                    return Ok(());
+                }
                 KeyCode::Char('c') => {
                     self.copy_hovered_block();
+                    return Ok(());
+                }
+                #[cfg(feature = "export")]
+                KeyCode::Char('e') => {
+                    self.input.export_step = Some(ExportStep::ChartSelect);
                     return Ok(());
                 }
                 KeyCode::Char('a') => {
@@ -707,6 +741,75 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    #[cfg(feature = "export")]
+    fn handle_export_input(&mut self, key: KeyEvent) -> Result<()> {
+        use export::{ExportChart, ExportFormat};
+
+        if key.code == KeyCode::Esc {
+            self.input.export_step = None;
+            return Ok(());
+        }
+
+        match self.input.export_step {
+            Some(ExportStep::ChartSelect) => match key.code {
+                KeyCode::Char('1') => {
+                    self.input.export_step = Some(ExportStep::FormatSelect(ExportChart::Top));
+                }
+                KeyCode::Char('2') => {
+                    self.input.export_step = Some(ExportStep::FormatSelect(ExportChart::Middle));
+                }
+                KeyCode::Char('3') => {
+                    self.input.export_step = Some(ExportStep::FormatSelect(ExportChart::Histogram));
+                }
+                KeyCode::Char('a') => {
+                    self.input.export_step = Some(ExportStep::FormatSelect(ExportChart::All));
+                }
+                _ => {}
+            },
+            Some(ExportStep::FormatSelect(chart)) => {
+                let format = match key.code {
+                    KeyCode::Char('p') => Some(ExportFormat::Png),
+                    KeyCode::Char('s') => Some(ExportFormat::Svg),
+                    _ => None,
+                };
+                if let Some(format) = format {
+                    self.input.export_step = None;
+                    self.run_export(chart, format);
+                }
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "export")]
+    fn run_export(&mut self, chart: export::ExportChart, format: export::ExportFormat) {
+        let Some(snapshot) = &self.snapshot else {
+            self.toast = Some(("no data to export".to_string(), Instant::now()));
+            return;
+        };
+
+        match export::export_charts(
+            snapshot,
+            self.view.chart_mode,
+            chart,
+            format,
+            self.view.view_start,
+            self.view.view_end,
+            self.effective_granularity(),
+            self.view.scale_mode,
+            self.view.hist_mode,
+            self.view.ema_span,
+        ) {
+            Ok(path) => {
+                self.toast = Some((format!("saved {path}"), Instant::now()));
+            }
+            Err(e) => {
+                self.toast = Some((format!("export failed: {e}"), Instant::now()));
+            }
+        }
     }
 
     pub fn effective_granularity(&self) -> usize {

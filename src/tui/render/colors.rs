@@ -21,6 +21,20 @@ pub(super) fn filter_rgb(index: usize) -> (u8, u8, u8) {
     }
 }
 
+pub(super) fn lighten(color: Color, factor: f64) -> Color {
+    let (r, g, b) = match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => return color,
+    };
+    let f = factor.clamp(0.0, 1.0);
+    let lift = |c: u8| {
+        let lin = (c as f64 / 255.0).powi(2);
+        let mixed = lin + (1.0 - lin) * f;
+        (mixed.sqrt() * 255.0).round() as u8
+    };
+    Color::Rgb(lift(r), lift(g), lift(b))
+}
+
 pub(super) fn blend_colors(colors: &[(u8, u8, u8)]) -> Color {
     if colors.is_empty() {
         return Color::White;

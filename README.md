@@ -88,6 +88,7 @@ All CLI flags can be set via environment variables or a `.env` file:
 | `h` | Cycle histogram mode (filter matches → all blocks → stacked) |
 | `s` | Cycle base fee Y-axis scale (linear → log → sqrt) |
 | `t` | Cycle chart type (tx count → gas used → tx size) |
+| `m` | Cycle EMA trendlines on top chart (20 → 50 → 250 → off) |
 | `l` | Toggle log panel |
 | `r` | Toggle RPC info panel |
 | `c` / click | Copy hovered block number to clipboard |

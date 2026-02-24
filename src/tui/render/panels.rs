@@ -5,6 +5,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use tracing::Level;
 
+#[cfg(feature = "export")]
+use crate::tui::ExportStep;
 use crate::tui::{App, AppMode, Granularity};
 
 use super::truncate_to;
@@ -143,8 +145,11 @@ fn help_lines(mode: AppMode) -> Vec<Line<'static>> {
             entries.push(("h", "switch histogram"));
             entries.push(("s", "cycle scale mode"));
             entries.push(("t", "cycle chart type"));
+            entries.push(("m", "cycle EMA (20/50/250/off)"));
             entries.push(("l", "toggle logs"));
             entries.push(("r", "toggle rpc info"));
+            #[cfg(feature = "export")]
+            entries.push(("e", "export chart"));
             entries.push(("mouse", "crosshair"));
             entries.push(("c/click", "copy block #"));
             entries.push(("z/Z/scroll", "zoom in/out"));
@@ -222,4 +227,36 @@ pub(super) fn render_granularity_input(app: &App, frame: &mut Frame, outer: Rect
     let cursor_x = area.x + 1 + input_text.len() as u16;
     let cursor_y = area.y + 1;
     frame.set_cursor_position((cursor_x, cursor_y));
+}
+
+#[cfg(feature = "export")]
+pub(super) fn render_export_modal(app: &App, frame: &mut Frame, outer: Rect) {
+    let (title, body) = match app.input.export_step {
+        Some(ExportStep::ChartSelect) => (
+            "export — select chart",
+            "1  top chart\n2  middle chart\n3  histogram\na  all charts\n\nEsc  cancel",
+        ),
+        Some(ExportStep::FormatSelect(_)) => {
+            ("export — select format", "p  PNG\ns  SVG\n\nEsc  cancel")
+        }
+        None => return,
+    };
+
+    let lines: usize = body.lines().count();
+    let panel_h = (lines as u16 + 2).min(outer.height);
+    let panel_w = 30u16.min(outer.width);
+    let area = Rect {
+        x: outer.x + (outer.width.saturating_sub(panel_w)) / 2,
+        y: outer.y + (outer.height.saturating_sub(panel_h)) / 2,
+        width: panel_w,
+        height: panel_h,
+    };
+
+    frame.render_widget(ratatui::widgets::Clear, area);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(Color::Black));
+    let paragraph = Paragraph::new(body).block(block);
+    frame.render_widget(paragraph, area);
 }

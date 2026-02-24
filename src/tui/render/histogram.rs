@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use ratatui::layout::Rect;
 use ratatui::prelude::Frame;
@@ -411,24 +411,31 @@ fn render_histogram_stacked(
     let visible = filter_visible(block_series, x_min, x_max);
 
     let enabled_filters: Vec<_> = snapshot.filters.iter().filter(|f| f.enabled).collect();
-    let filter_match_sets: Vec<HashSet<u64>> = enabled_filters
+
+    let use_value_attribution = matches!(chart_mode, ChartMode::GasUsed | ChartMode::TxSize);
+
+    let filter_value_lookups: Vec<HashMap<u64, f64>> = enabled_filters
         .iter()
         .map(|f| {
             snapshot
-                .filter_series
-                .get(&f.id)
+                .filter_series_for(chart_mode, &f.id)
                 .map(|series| {
                     filter_visible(series, x_min, x_max)
                         .iter()
-                        .filter(|(_, count)| *count > 0.0)
-                        .map(|(block, _)| *block as u64)
+                        .map(|(block, val)| (*block as u64, *val))
                         .collect()
                 })
                 .unwrap_or_default()
         })
         .collect();
 
-    let entries: Vec<(f64, u16)> = visible
+    struct BlockEntry {
+        bucket: f64,
+        block_value: f64,
+        filter_values: Vec<f64>,
+    }
+
+    let entries: Vec<BlockEntry> = visible
         .chunks(g.max(1))
         .map(|chunk| {
             let agg_value = match chart_mode {
@@ -441,19 +448,32 @@ fn render_histogram_stacked(
                     (sum * bucket_precision(chart_mode)).floor() / bucket_precision(chart_mode)
                 }
             };
-            let mask: u16 = filter_match_sets
+            let block_value = chunk.iter().map(|(_, v)| v).sum::<f64>();
+            let filter_values: Vec<f64> = filter_value_lookups
                 .iter()
-                .enumerate()
-                .filter(|(_, set)| chunk.iter().any(|(b, _)| set.contains(&(*b as u64))))
-                .fold(0u16, |acc, (i, _)| acc | (1 << i));
-            (agg_value, mask)
+                .map(|lookup| {
+                    chunk
+                        .iter()
+                        .map(|(b, _)| lookup.get(&(*b as u64)).copied().unwrap_or(0.0))
+                        .sum()
+                })
+                .collect();
+            BlockEntry {
+                bucket: agg_value,
+                block_value,
+                filter_values,
+            }
         })
         .collect();
 
     let mut raw_tree: BTreeMap<i64, f64> = BTreeMap::new();
-    for &(bucket, _) in &entries {
-        let key = quantize_bucket(bucket, chart_mode);
-        *raw_tree.entry(key).or_default() += 1.0;
+    for entry in &entries {
+        let key = quantize_bucket(entry.bucket, chart_mode);
+        if use_value_attribution {
+            *raw_tree.entry(key).or_default() += entry.block_value;
+        } else {
+            *raw_tree.entry(key).or_default() += 1.0;
+        }
     }
     let raw_hist: Vec<(f64, f64)> = raw_tree
         .into_iter()
@@ -489,57 +509,104 @@ fn render_histogram_stacked(
         segments: Vec<Segment>,
     }
 
-    let stacked_bars: Vec<StackedBar> = merged
-        .iter()
-        .map(|(lo, hi, total)| {
-            let mut mask_counts: HashMap<u16, f64> = HashMap::new();
-            for &(bucket, mask) in &entries {
-                if bucket >= *lo - 1e-9 && bucket <= *hi + 1e-9 {
-                    *mask_counts.entry(mask).or_default() += 1.0;
+    let stacked_bars: Vec<StackedBar> = if use_value_attribution {
+        merged
+            .iter()
+            .map(|(lo, hi, total)| {
+                let mut per_filter: Vec<f64> = vec![0.0; enabled_filters.len()];
+                let mut total_block_value = 0.0_f64;
+                for entry in &entries {
+                    if entry.bucket >= *lo - 1e-9 && entry.bucket <= *hi + 1e-9 {
+                        total_block_value += entry.block_value;
+                        for (i, &fv) in entry.filter_values.iter().enumerate() {
+                            per_filter[i] += fv;
+                        }
+                    }
                 }
-            }
+                let matched_total: f64 = per_filter.iter().sum();
+                let unmatched = (total_block_value - matched_total).max(0.0);
 
-            let mut segments: Vec<Segment> = Vec::new();
+                let mut segments: Vec<Segment> = Vec::new();
+                if unmatched > 0.0 {
+                    segments.push(Segment {
+                        count: unmatched,
+                        color: Color::DarkGray,
+                    });
+                }
+                for (i, &val) in per_filter.iter().enumerate() {
+                    if val > 0.0 {
+                        segments.push(Segment {
+                            count: val,
+                            color: filter_color(enabled_filters[i].color_index),
+                        });
+                    }
+                }
+                StackedBar {
+                    lo: *lo,
+                    hi: *hi,
+                    total: *total,
+                    segments,
+                }
+            })
+            .collect()
+    } else {
+        merged
+            .iter()
+            .map(|(lo, hi, total)| {
+                let mut mask_counts: HashMap<u16, f64> = HashMap::new();
+                for entry in &entries {
+                    if entry.bucket >= *lo - 1e-9 && entry.bucket <= *hi + 1e-9 {
+                        let mask: u16 = entry
+                            .filter_values
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, v)| **v > 0.0)
+                            .fold(0u16, |acc, (i, _)| acc | (1 << i));
+                        *mask_counts.entry(mask).or_default() += 1.0;
+                    }
+                }
 
-            if let Some(&count) = mask_counts.get(&0)
-                && count > 0.0
-            {
-                segments.push(Segment {
-                    count,
-                    color: Color::DarkGray,
-                });
-            }
+                let mut segments: Vec<Segment> = Vec::new();
+                if let Some(&count) = mask_counts.get(&0)
+                    && count > 0.0
+                {
+                    segments.push(Segment {
+                        count,
+                        color: Color::DarkGray,
+                    });
+                }
 
-            let mut matched: Vec<(u16, f64)> = mask_counts
-                .into_iter()
-                .filter(|(mask, _)| *mask != 0)
-                .collect();
-            matched.sort_by_key(|(mask, _)| *mask);
-
-            for (mask, count) in matched {
-                let indices: Vec<usize> = (0..enabled_filters.len())
-                    .filter(|i| mask & (1 << *i) != 0)
+                let mut matched: Vec<(u16, f64)> = mask_counts
+                    .into_iter()
+                    .filter(|(mask, _)| *mask != 0)
                     .collect();
-                let color = if indices.len() == 1 {
-                    filter_color(enabled_filters[indices[0]].color_index)
-                } else {
-                    let rgbs: Vec<(u8, u8, u8)> = indices
-                        .iter()
-                        .map(|&i| filter_rgb(enabled_filters[i].color_index))
-                        .collect();
-                    blend_colors(&rgbs)
-                };
-                segments.push(Segment { count, color });
-            }
+                matched.sort_by_key(|(mask, _)| *mask);
 
-            StackedBar {
-                lo: *lo,
-                hi: *hi,
-                total: *total,
-                segments,
-            }
-        })
-        .collect();
+                for (mask, count) in matched {
+                    let indices: Vec<usize> = (0..enabled_filters.len())
+                        .filter(|i| mask & (1 << *i) != 0)
+                        .collect();
+                    let color = if indices.len() == 1 {
+                        filter_color(enabled_filters[indices[0]].color_index)
+                    } else {
+                        let rgbs: Vec<(u8, u8, u8)> = indices
+                            .iter()
+                            .map(|&i| filter_rgb(enabled_filters[i].color_index))
+                            .collect();
+                        blend_colors(&rgbs)
+                    };
+                    segments.push(Segment { count, color });
+                }
+
+                StackedBar {
+                    lo: *lo,
+                    hi: *hi,
+                    total: *total,
+                    segments,
+                }
+            })
+            .collect()
+    };
 
     let max_label_len = stacked_bars
         .iter()
@@ -608,7 +675,15 @@ fn render_histogram_stacked(
 
         let bar_top = bar_bottom.saturating_sub(bar_height);
         if bar_top > inner.y {
-            let value_str = format!("{}", bar.total as u64);
+            let value_str = if use_value_attribution {
+                match chart_mode {
+                    ChartMode::GasUsed => format_gas(bar.total),
+                    ChartMode::TxSize => format_bytes(bar.total),
+                    ChartMode::TxCount => format!("{}", bar.total as u64),
+                }
+            } else {
+                format!("{}", bar.total as u64)
+            };
             let value_row = bar_top - 1;
             if value_row >= inner.y && value_str.len() <= bar_w as usize {
                 for (j, ch) in value_str.chars().enumerate() {
