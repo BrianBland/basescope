@@ -113,10 +113,7 @@ pub(super) fn render_results(app: &App, frame: &mut Frame, area: Rect) {
         .collect();
 
     let visible_mid = filter_visible(block_series, x_min, x_max);
-    let grouped_mid = match chart_mode {
-        ChartMode::TxCount => group_series_avg(visible_mid, g),
-        ChartMode::GasUsed | ChartMode::TxSize => group_series_sum(visible_mid, g),
-    };
+    let grouped_mid = group_series_avg(visible_mid, g);
 
     let use_scale = chart_mode == ChartMode::TxCount;
     let scale = if use_scale {
